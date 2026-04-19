@@ -102,8 +102,8 @@ pub fn load_effective_config(cli: &Cli) -> Result<EffectiveConfig> {
     let actions_limit = cli
         .actions_limit
         .or(file_config.actions_limit)
-        .unwrap_or(10);
-    let prs_limit = cli.prs_limit.or(file_config.prs_limit).unwrap_or(30);
+        .unwrap_or(25);
+    let prs_limit = cli.prs_limit.or(file_config.prs_limit).unwrap_or(50);
 
     let raw_repos = if !cli.repo.is_empty() || !cli.repos.is_empty() {
         cli.repo
@@ -200,8 +200,8 @@ pub fn init_config(path: &Path, force: bool) -> Result<()> {
     let example = r#"host = "github.com"
 interval = 10
 mode = "split"
-actions_limit = 10
-prs_limit = 30
+actions_limit = 25
+prs_limit = 50
 
 repos = [
   "owner/repo-a",

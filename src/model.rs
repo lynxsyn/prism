@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 
@@ -175,6 +176,21 @@ impl DetailView {
             Self::PullRequest(detail) => detail.summary.url.as_str(),
         }
     }
+
+    pub fn cache_key(&self) -> String {
+        match self {
+            Self::Workflow(detail) => DetailTarget::WorkflowRun {
+                repo: detail.summary.repo.clone(),
+                run_id: detail.summary.id,
+            }
+            .cache_key(),
+            Self::PullRequest(detail) => DetailTarget::PullRequest {
+                repo: detail.summary.repo.clone(),
+                number: detail.summary.number,
+            }
+            .cache_key(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -197,7 +213,7 @@ impl FocusPane {
 pub struct DashboardState {
     pub actions: Vec<WorkflowRunSummary>,
     pub pulls: Vec<PullRequestSummary>,
-    pub detail: Option<DetailView>,
+    pub detail_cache: HashMap<String, DetailView>,
     pub rate_limit: Option<RateLimitState>,
     pub errors: Vec<String>,
     pub last_refresh_at: Option<DateTime<Utc>>,
@@ -205,8 +221,17 @@ pub struct DashboardState {
     pub effective_interval_secs: u64,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum DetailTarget {
     WorkflowRun { repo: RepoTarget, run_id: u64 },
     PullRequest { repo: RepoTarget, number: u64 },
+}
+
+impl DetailTarget {
+    pub fn cache_key(&self) -> String {
+        match self {
+            Self::WorkflowRun { repo, run_id } => format!("workflow:{}#{run_id}", repo),
+            Self::PullRequest { repo, number } => format!("pr:{}#{number}", repo),
+        }
+    }
 }

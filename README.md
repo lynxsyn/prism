@@ -8,7 +8,7 @@ This README documents the current shipped CLI and TUI behavior in `prism 0.1.0`.
 
 Prism currently provides:
 
-- a live TUI with repo-first split panes and a stacked compact mode
+- a live TUI with stacked full-width repo panes and a stacked compact mode
 - two layouts: `split` and `compact`
 - workflow and PR detail drill-down with live progress bars and failure markers
 - browser open for the selected PR or workflow run
@@ -95,8 +95,8 @@ Global flags:
 - `-i, --interval <SECONDS>`: base refresh interval, default `10`, clamped to a minimum of `5`
 - `-m, --mode <compact|split>`: layout mode, default `split`
 - `--host <HOST>`: GitHub host, default `github.com`
-- `--actions-limit <N>`: workflow runs per repo, default `10`
-- `--prs-limit <N>`: open PRs per repo, default `30`
+- `--actions-limit <N>`: workflow runs per repo, default `25`
+- `--prs-limit <N>`: open PRs per repo, default `50`
 - `--open-command <CMD>`: override how URLs are opened
 - `--no-color`: disable color styling
 - `--ascii-only`: replace Unicode spinners and bars with ASCII-safe output
@@ -173,8 +173,8 @@ Recommended token permissions:
 host = "github.com"
 interval = 10
 mode = "split"
-actions_limit = 10
-prs_limit = 30
+actions_limit = 25
+prs_limit = 50
 
 repos = [
   "owner/repo-a",
@@ -217,14 +217,14 @@ CLI flags override env and config values. Config overrides built-in defaults.
 
 ### Layout modes
 
-- `split`: side-by-side repo panes; each pane can toggle between Actions and Pull Requests and Prism requires at least `98` columns for this mode
+- `split`: stacked top-bottom repo panes that each use the full terminal width; each pane can toggle between Actions and Pull Requests and keep its own inline detail open; Prism requires at least `60` columns and `18` rows for this mode
 - `compact`: stacked Actions and Pull Requests panes; Prism requires at least `56` columns for this mode
 
 If the terminal is narrower than the current mode supports, Prism shows a resize warning instead of trying to squeeze the tables into unreadable columns.
 
 ### Actions pane
 
-In `split`, each repo pane shows Actions or Pull Requests for one configured repo. In `compact`, Actions stay in the top pane.
+In `split`, each repo pane shows Actions or Pull Requests for one configured repo in a stacked top-bottom layout. In `compact`, Actions stay in the top pane.
 
 Current columns:
 
@@ -285,6 +285,8 @@ PR detail currently shows:
 - per-check progress bars for pending, running, and completed states
 - explicit `[PASS]`, `[FAIL]`, `[WAIT]`, and `[RUN ]` badges
 
+In `split`, both repo panes can keep independent detail views open at the same time.
+
 Press `l` or `o` to open the selected PR or workflow run in the browser.
 
 ### Status bar and refresh behavior
@@ -318,7 +320,7 @@ Polling behavior:
 - `G`: jump to bottom
 - `Enter`: open detail for the selected Actions row or PR row
 - `l` or `o`: open the selected PR or workflow run in the browser
-- `Esc`: close help or detail
+- `Esc`: close help or the focused pane detail
 - `?`: toggle the help overlay
 
 There is no in-app keybinding to switch between `split` and `compact`; choose the mode when you launch Prism.
@@ -357,10 +359,10 @@ Auth problems:
 - verify the token source
 - if you depend on `gh` fallback, make sure `gh auth token --hostname <host>` works
 
-Terminal too narrow:
+Terminal too small:
 
 - switch to `--mode compact`
-- widen the terminal
+- widen or heighten the terminal
 
 ## Docs Map
 

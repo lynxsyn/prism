@@ -21,7 +21,7 @@ pub enum PollerMessage {
 pub struct DashboardUpdate {
     pub actions: Option<Vec<WorkflowRunSummary>>,
     pub pulls: Option<Vec<PullRequestSummary>>,
-    pub detail: Option<Option<DetailView>>,
+    pub detail_updates: Vec<DetailView>,
     pub rate_limit: Option<RateLimitState>,
     pub errors: Vec<String>,
     pub fetched_at: chrono::DateTime<chrono::Utc>,
@@ -33,7 +33,7 @@ pub struct DashboardUpdate {
 pub struct PollerControl {
     pub refresh_now: AtomicBool,
     pub stop: AtomicBool,
-    pub detail_target: Mutex<Option<DetailTarget>>,
+    pub detail_targets: Mutex<Vec<DetailTarget>>,
 }
 
 impl PollerControl {
@@ -45,9 +45,9 @@ impl PollerControl {
         self.stop.store(true, Ordering::Relaxed);
     }
 
-    pub fn set_detail_target(&self, detail_target: Option<DetailTarget>) {
-        if let Ok(mut guard) = self.detail_target.lock() {
-            *guard = detail_target;
+    pub fn set_detail_targets(&self, detail_targets: Vec<DetailTarget>) {
+        if let Ok(mut guard) = self.detail_targets.lock() {
+            *guard = detail_targets;
         }
         self.request_refresh();
     }
@@ -71,11 +71,16 @@ pub fn spawn_poller(
                 break;
             }
 
-            let detail_target = thread_control
-                .detail_target
+            let detail_targets = thread_control
+                .detail_targets
                 .lock()
                 .ok()
-                .and_then(|guard| guard.clone());
+                .map(|guard| {
+                    let mut targets = guard.clone();
+                    targets.dedup();
+                    targets
+                })
+                .unwrap_or_default();
             let mut update = DashboardUpdate {
                 fetched_at: Utc::now(),
                 ..DashboardUpdate::default()
@@ -139,7 +144,7 @@ pub fn spawn_poller(
                 update.pulls = Some(pulls);
             }
 
-            if let Some(target) = detail_target {
+            for target in detail_targets {
                 match target {
                     DetailTarget::WorkflowRun { repo, run_id } => {
                         let maybe_summary = update
@@ -157,7 +162,9 @@ pub fn spawn_poller(
                                 Ok(result) => {
                                     update.had_success = true;
                                     rate_limits.push(result.rate_limit);
-                                    update.detail = Some(Some(DetailView::Workflow(result.value)));
+                                    update
+                                        .detail_updates
+                                        .push(DetailView::Workflow(result.value));
                                 }
                                 Err(error) => {
                                     rate_limits.push(error.rate_limit.clone());
@@ -167,9 +174,7 @@ pub fn spawn_poller(
                                         run_id
                                     ));
                                 }
-                            }
-                        } else {
-                            update.detail = Some(None);
+                            };
                         }
                     }
                     DetailTarget::PullRequest { repo, number } => {
@@ -177,7 +182,9 @@ pub fn spawn_poller(
                             Ok(result) => {
                                 update.had_success = true;
                                 rate_limits.push(result.rate_limit);
-                                update.detail = Some(Some(DetailView::PullRequest(result.value)));
+                                update
+                                    .detail_updates
+                                    .push(DetailView::PullRequest(result.value));
                             }
                             Err(error) => {
                                 rate_limits.push(error.rate_limit.clone());
@@ -190,8 +197,6 @@ pub fn spawn_poller(
                         }
                     }
                 }
-            } else {
-                update.detail = Some(None);
             }
 
             update.rate_limit = merge_rate_limits(rate_limits);
@@ -254,8 +259,8 @@ pub fn apply_update(state: &mut DashboardState, update: DashboardUpdate) {
     if let Some(pulls) = update.pulls {
         state.pulls = pulls;
     }
-    if let Some(detail) = update.detail {
-        state.detail = detail;
+    for detail in update.detail_updates {
+        state.detail_cache.insert(detail.cache_key(), detail);
     }
     if let Some(rate_limit) = update.rate_limit {
         state.rate_limit = Some(rate_limit);

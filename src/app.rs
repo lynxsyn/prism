@@ -32,6 +32,8 @@ pub struct SplitPaneState {
     pub selected_pr_id: Option<String>,
     pub actions_index: usize,
     pub prs_index: usize,
+    pub detail_target: Option<DetailTarget>,
+    pub detail_scroll: usize,
 }
 
 impl SplitPaneState {
@@ -43,6 +45,8 @@ impl SplitPaneState {
             selected_pr_id: None,
             actions_index: 0,
             prs_index: 0,
+            detail_target: None,
+            detail_scroll: 0,
         }
     }
 }
@@ -53,8 +57,8 @@ pub struct App {
     pub compact_focus: FocusPane,
     pub split_focus: usize,
     pub show_help: bool,
-    pub detail_pane: Option<usize>,
-    pub detail_scroll: usize,
+    pub compact_detail_target: Option<DetailTarget>,
+    pub compact_detail_scroll: usize,
     pub spinner_index: usize,
     pub actions_table_state: RefCell<TableState>,
     pub prs_table_state: RefCell<TableState>,
@@ -73,8 +77,8 @@ impl App {
             compact_focus: FocusPane::Actions,
             split_focus: 0,
             show_help: false,
-            detail_pane: None,
-            detail_scroll: 0,
+            compact_detail_target: None,
+            compact_detail_scroll: 0,
             spinner_index: 0,
             actions_table_state: RefCell::new(TableState::default()),
             prs_table_state: RefCell::new(TableState::default()),
@@ -118,11 +122,17 @@ impl App {
     }
 
     pub(crate) fn split_detail_open(&self, pane_index: usize) -> bool {
-        self.config.mode == Mode::Split && self.detail_pane == Some(pane_index)
+        self.config.mode == Mode::Split && self.split_panes[pane_index].detail_target.is_some()
     }
 
     pub(crate) fn detail_open(&self) -> bool {
-        self.detail_pane.is_some()
+        match self.config.mode {
+            Mode::Compact => self.compact_detail_target.is_some(),
+            Mode::Split => self
+                .split_panes
+                .iter()
+                .any(|pane| pane.detail_target.is_some()),
+        }
     }
 
     pub(crate) fn focused_view(&self) -> FocusPane {
@@ -139,9 +149,49 @@ impl App {
         }
     }
 
+    pub(crate) fn current_detail_target(&self) -> Option<&DetailTarget> {
+        match self.config.mode {
+            Mode::Compact => self.compact_detail_target.as_ref(),
+            Mode::Split => self.split_panes[self.split_focus].detail_target.as_ref(),
+        }
+    }
+
+    pub(crate) fn split_detail_target(&self, pane_index: usize) -> Option<&DetailTarget> {
+        self.split_panes[pane_index].detail_target.as_ref()
+    }
+
+    pub(crate) fn detail_scroll_for(&self, pane_index: Option<usize>) -> usize {
+        match self.config.mode {
+            Mode::Compact => self.compact_detail_scroll,
+            Mode::Split => pane_index
+                .and_then(|index| self.split_panes.get(index))
+                .map(|pane| pane.detail_scroll)
+                .unwrap_or_default(),
+        }
+    }
+
+    pub(crate) fn detail_view(&self, target: &DetailTarget) -> Option<&DetailView> {
+        self.state.detail_cache.get(&target.cache_key())
+    }
+
+    fn active_detail_targets(&self) -> Vec<DetailTarget> {
+        match self.config.mode {
+            Mode::Compact => self.compact_detail_target.clone().into_iter().collect(),
+            Mode::Split => self
+                .split_panes
+                .iter()
+                .filter_map(|pane| pane.detail_target.clone())
+                .collect(),
+        }
+    }
+
+    fn sync_detail_targets(&self, poller_control: &PollerControl) {
+        poller_control.set_detail_targets(self.active_detail_targets());
+    }
+
     fn open_target(&self) -> Option<&str> {
-        if self.detail_open() {
-            return self.state.detail.as_ref().map(DetailView::url).or_else(|| {
+        if let Some(target) = self.current_detail_target() {
+            return self.detail_view(target).map(DetailView::url).or_else(|| {
                 match self.focused_view() {
                     FocusPane::Actions => self.current_action().map(|run| run.url.as_str()),
                     FocusPane::PullRequests => self.current_pr().map(|pr| pr.url.as_str()),
@@ -186,8 +236,10 @@ impl App {
     }
 
     fn move_compact_selection(&mut self, delta: i32) {
-        if self.detail_open() {
-            self.detail_scroll = self.detail_scroll.saturating_add_signed(delta as isize);
+        if self.compact_detail_target.is_some() {
+            self.compact_detail_scroll = self
+                .compact_detail_scroll
+                .saturating_add_signed(delta as isize);
             return;
         }
 
@@ -229,8 +281,10 @@ impl App {
     }
 
     fn move_split_selection(&mut self, delta: i32) {
-        if self.detail_pane == Some(self.split_focus) {
-            self.detail_scroll = self.detail_scroll.saturating_add_signed(delta as isize);
+        if self.split_panes[self.split_focus].detail_target.is_some() {
+            self.split_panes[self.split_focus].detail_scroll = self.split_panes[self.split_focus]
+                .detail_scroll
+                .saturating_add_signed(delta as isize);
             return;
         }
 
@@ -284,8 +338,8 @@ impl App {
     }
 
     fn jump_compact(&mut self, bottom: bool) {
-        if self.detail_open() {
-            self.detail_scroll = if bottom { usize::MAX / 4 } else { 0 };
+        if self.compact_detail_target.is_some() {
+            self.compact_detail_scroll = if bottom { usize::MAX / 4 } else { 0 };
             return;
         }
 
@@ -322,8 +376,9 @@ impl App {
     }
 
     fn jump_split(&mut self, bottom: bool) {
-        if self.detail_pane == Some(self.split_focus) {
-            self.detail_scroll = if bottom { usize::MAX / 4 } else { 0 };
+        if self.split_panes[self.split_focus].detail_target.is_some() {
+            self.split_panes[self.split_focus].detail_scroll =
+                if bottom { usize::MAX / 4 } else { 0 };
             return;
         }
 
@@ -362,11 +417,6 @@ impl App {
     }
 
     fn open_detail(&mut self, poller_control: &PollerControl) {
-        self.detail_pane = Some(match self.config.mode {
-            Mode::Compact => 0,
-            Mode::Split => self.split_focus,
-        });
-        self.detail_scroll = 0;
         let target = match self.focused_view() {
             FocusPane::Actions => {
                 self.current_action()
@@ -386,9 +436,18 @@ impl App {
             }
         };
         if let Some(target) = target {
-            poller_control.set_detail_target(Some(target));
-        } else {
-            self.detail_pane = None;
+            match self.config.mode {
+                Mode::Compact => {
+                    self.compact_detail_target = Some(target);
+                    self.compact_detail_scroll = 0;
+                }
+                Mode::Split => {
+                    let pane = &mut self.split_panes[self.split_focus];
+                    pane.detail_target = Some(target);
+                    pane.detail_scroll = 0;
+                }
+            }
+            self.sync_detail_targets(poller_control);
         }
     }
 
@@ -397,7 +456,7 @@ impl App {
             Mode::Compact if !self.detail_open() => {
                 self.compact_focus = self.compact_focus.toggle();
             }
-            Mode::Split if self.detail_pane != Some(self.split_focus) => {
+            Mode::Split if self.split_panes[self.split_focus].detail_target.is_none() => {
                 let pane = &mut self.split_panes[self.split_focus];
                 pane.content = pane.content.toggle();
                 self.sync_split_table_state(self.split_focus);
@@ -424,9 +483,18 @@ impl App {
     }
 
     fn close_detail(&mut self, poller_control: &PollerControl) {
-        self.detail_pane = None;
-        self.detail_scroll = 0;
-        poller_control.set_detail_target(None);
+        match self.config.mode {
+            Mode::Compact => {
+                self.compact_detail_target = None;
+                self.compact_detail_scroll = 0;
+            }
+            Mode::Split => {
+                let pane = &mut self.split_panes[self.split_focus];
+                pane.detail_target = None;
+                pane.detail_scroll = 0;
+            }
+        }
+        self.sync_detail_targets(poller_control);
     }
 
     fn anchor_selection(&mut self) {
@@ -647,7 +715,7 @@ pub fn run_app(config: EffectiveConfig, auth: ResolvedAuth) -> Result<()> {
                 KeyCode::Esc => {
                     if app.show_help {
                         app.show_help = false;
-                    } else if app.detail_open() {
+                    } else if app.current_detail_target().is_some() {
                         app.close_detail(&poller_control);
                     }
                 }

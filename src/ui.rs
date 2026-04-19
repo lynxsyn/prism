@@ -25,14 +25,16 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
     let body = outer[0];
     let status = outer[1];
 
-    if body.width < minimum_width(app.config.mode) {
-        let warning = Paragraph::new("Prism needs a wider terminal for this mode.")
+    if body.width < minimum_width(app.config.mode) || body.height < minimum_height(app.config.mode)
+    {
+        let warning = Paragraph::new("Prism needs a larger terminal for this mode.")
             .alignment(Alignment::Center)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_set(border::DOUBLE)
                     .title("Resize needed")
-                    .padding(Padding::horizontal(1)),
+                    .padding(Padding::horizontal(2)),
             );
         frame.render_widget(warning, body);
         draw_status_bar(frame, status, app);
@@ -53,7 +55,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
 
 fn draw_split(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let sections = Layout::default()
-        .direction(Direction::Horizontal)
+        .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
@@ -320,8 +322,8 @@ fn draw_repo_actions_table(
             .iter()
             .map(|run| {
                 Row::new(vec![
-                    Cell::from(format!(" {} ", truncate(&run.workflow_name, 24))),
-                    Cell::from(format!(" {} ", truncate(&run.branch, 14))),
+                    Cell::from(format!(" {} ", truncate(&run.workflow_name, 44))),
+                    Cell::from(format!(" {} ", truncate(&run.branch, 24))),
                     Cell::from(Text::styled(
                         format!(" {} ", format_run_state(run, app)),
                         state_style(
@@ -340,8 +342,8 @@ fn draw_repo_actions_table(
     let table = Table::new(
         rows,
         [
-            Constraint::Min(20),
-            Constraint::Length(16),
+            Constraint::Min(40),
+            Constraint::Length(26),
             Constraint::Length(14),
             Constraint::Length(8),
             Constraint::Length(8),
@@ -394,8 +396,8 @@ fn draw_repo_prs_table(
                 };
                 Row::new(vec![
                     Cell::from(format!(" #{} ", pr.number)),
-                    Cell::from(format!(" {} ", truncate(&pr.title, 28))),
-                    Cell::from(format!(" {} ", truncate(&pr.author, 12))),
+                    Cell::from(format!(" {} ", truncate(&pr.title, 54))),
+                    Cell::from(format!(" {} ", truncate(&pr.author, 16))),
                     Cell::from(format!(" {} ", review_state(pr))),
                     Cell::from(format!(" {} ", ci_state(pr))),
                     Cell::from(format!(" {} ", format_age(pr.updated_at))),
@@ -409,8 +411,8 @@ fn draw_repo_prs_table(
         rows,
         [
             Constraint::Length(6),
-            Constraint::Min(24),
-            Constraint::Length(14),
+            Constraint::Min(48),
+            Constraint::Length(18),
             Constraint::Length(13),
             Constraint::Length(10),
             Constraint::Length(9),
@@ -435,44 +437,47 @@ fn draw_detail_pane(
     focused: bool,
 ) {
     let lines = match kind {
-        FocusPane::Actions => workflow_detail_lines(
-            app,
-            pane_index
-                .and_then(|index| app.current_split_action(index))
-                .or_else(|| app.current_action()),
-        ),
-        FocusPane::PullRequests => pr_detail_lines(
-            app,
-            pane_index
-                .and_then(|index| app.current_split_pr(index))
-                .or_else(|| app.current_pr()),
-        ),
+        FocusPane::Actions => workflow_detail_lines(app, pane_index),
+        FocusPane::PullRequests => pr_detail_lines(app, pane_index),
     };
 
     let paragraph = Paragraph::new(lines)
         .block(pane_block(title, focused))
-        .scroll((app.detail_scroll as u16, 0))
+        .scroll((app.detail_scroll_for(pane_index) as u16, 0))
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 }
 
-fn workflow_detail_lines(app: &App, target: Option<&WorkflowRunSummary>) -> Vec<Line<'static>> {
+fn workflow_detail_lines(app: &App, pane_index: Option<usize>) -> Vec<Line<'static>> {
+    let detail = pane_index
+        .and_then(|index| app.split_detail_target(index))
+        .or_else(|| app.current_detail_target())
+        .and_then(|target| match app.detail_view(target) {
+            Some(DetailView::Workflow(detail)) => Some(detail),
+            _ => None,
+        });
+    if let Some(detail) = detail {
+        return workflow_detail_lines_loaded(app, detail);
+    }
+
+    let target = pane_index
+        .and_then(|index| app.current_split_action(index))
+        .or_else(|| app.current_action());
     let Some(target) = target else {
         return vec![Line::from("  No workflow run selected.  ")];
     };
+    vec![
+        Line::from(format!(
+            "  {}  {}",
+            target.repo.slug(),
+            truncate(&target.workflow_name, 50)
+        )),
+        Line::from(""),
+        Line::from("  Loading workflow detail...  "),
+    ]
+}
 
-    let Some(detail) = matching_workflow_detail(app, target) else {
-        return vec![
-            Line::from(format!(
-                "  {}  {}",
-                target.repo.slug(),
-                truncate(&target.workflow_name, 34)
-            )),
-            Line::from(""),
-            Line::from("  Loading workflow detail...  "),
-        ];
-    };
-
+fn workflow_detail_lines_loaded(app: &App, detail: &WorkflowRunDetail) -> Vec<Line<'static>> {
     let ascii_only = app.config.ui.ascii_only;
     let run_style = state_style(
         detail.summary.conclusion.as_deref(),
@@ -494,11 +499,11 @@ fn workflow_detail_lines(app: &App, target: Option<&WorkflowRunSummary>) -> Vec<
                 run_style,
             ),
             Span::styled(
-                truncate(&detail.summary.workflow_name, 28),
+                truncate(&detail.summary.workflow_name, 36),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
-            Span::raw(truncate(&detail.summary.title, 34)),
+            Span::raw(truncate(&detail.summary.title, 62)),
         ]),
         Line::from(""),
         kv_line("repo", detail.summary.repo.slug(), ascii_only),
@@ -538,37 +543,50 @@ fn workflow_detail_lines(app: &App, target: Option<&WorkflowRunSummary>) -> Vec<
     lines
 }
 
-fn pr_detail_lines(app: &App, target: Option<&PullRequestSummary>) -> Vec<Line<'static>> {
+fn pr_detail_lines(app: &App, pane_index: Option<usize>) -> Vec<Line<'static>> {
+    let detail = pane_index
+        .and_then(|index| app.split_detail_target(index))
+        .or_else(|| app.current_detail_target())
+        .and_then(|target| match app.detail_view(target) {
+            Some(DetailView::PullRequest(detail)) => Some(detail),
+            _ => None,
+        });
+    if let Some(detail) = detail {
+        return pr_detail_lines_loaded(app, detail);
+    }
+
+    let target = pane_index
+        .and_then(|index| app.current_split_pr(index))
+        .or_else(|| app.current_pr());
     let Some(target) = target else {
         return vec![Line::from("  No pull request selected.  ")];
     };
-
-    let Some(detail) = matching_pr_detail(app, target) else {
-        return vec![
-            Line::from(vec![
-                Span::styled(
-                    format!(
-                        "{}  ",
-                        status_symbol_for_pr_rollup(
-                            target.ci_rollup.as_deref(),
-                            app.config.ui.ascii_only,
-                            app.spinner_index
-                        )
-                    ),
-                    pr_rollup_style(target.ci_rollup.as_deref(), app.config.ui.no_color),
+    vec![
+        Line::from(vec![
+            Span::styled(
+                format!(
+                    "{}  ",
+                    status_symbol_for_pr_rollup(
+                        target.ci_rollup.as_deref(),
+                        app.config.ui.ascii_only,
+                        app.spinner_index
+                    )
                 ),
-                Span::styled(
-                    format!("#{}", target.number),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("  "),
-                Span::raw(truncate(&target.title, 42)),
-            ]),
-            Line::from(""),
-            Line::from("  Loading pull request detail...  "),
-        ];
-    };
+                pr_rollup_style(target.ci_rollup.as_deref(), app.config.ui.no_color),
+            ),
+            Span::styled(
+                format!("#{}", target.number),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::raw(truncate(&target.title, 62)),
+        ]),
+        Line::from(""),
+        Line::from("  Loading pull request detail...  "),
+    ]
+}
 
+fn pr_detail_lines_loaded(app: &App, detail: &PullRequestDetail) -> Vec<Line<'static>> {
     let ascii_only = app.config.ui.ascii_only;
     let rollup_style = pr_rollup_style(detail.summary.ci_rollup.as_deref(), app.config.ui.no_color);
     let mut lines = vec![
@@ -639,36 +657,6 @@ fn pr_detail_lines(app: &App, target: Option<&PullRequestSummary>) -> Vec<Line<'
     }
 
     lines
-}
-
-fn matching_workflow_detail<'a>(
-    app: &'a App,
-    target: &WorkflowRunSummary,
-) -> Option<&'a WorkflowRunDetail> {
-    match app.state.detail.as_ref() {
-        Some(DetailView::Workflow(detail))
-            if detail.summary.id == target.id
-                && detail.summary.repo.slug() == target.repo.slug() =>
-        {
-            Some(detail)
-        }
-        _ => None,
-    }
-}
-
-fn matching_pr_detail<'a>(
-    app: &'a App,
-    target: &PullRequestSummary,
-) -> Option<&'a PullRequestDetail> {
-    match app.state.detail.as_ref() {
-        Some(DetailView::PullRequest(detail))
-            if detail.summary.number == target.number
-                && detail.summary.repo.slug() == target.repo.slug() =>
-        {
-            Some(detail)
-        }
-        _ => None,
-    }
 }
 
 fn kv_line(label: &str, value: String, ascii_only: bool) -> Line<'static> {
@@ -882,7 +870,7 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Mode::Split => format!(
             "focus:{}/{}",
             app.current_repo_label().unwrap_or_else(|| "-".to_string()),
-            if app.detail_pane == Some(app.split_focus) {
+            if app.split_detail_open(app.split_focus) {
                 "detail".to_string()
             } else {
                 view_label(app.focused_view()).to_string()
@@ -903,7 +891,7 @@ fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
             }
         }
         Mode::Split => {
-            if app.detail_pane == Some(app.split_focus) {
+            if app.split_detail_open(app.split_focus) {
                 " | ←→:repo | esc:back | l:link"
             } else {
                 " | ←→:repo | tab:view | enter:detail | l:link"
@@ -939,7 +927,7 @@ fn help_paragraph() -> Paragraph<'static> {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_set(border::THICK)
+                .border_set(border::DOUBLE)
                 .title("Help")
                 .padding(Padding::horizontal(2)),
         )
@@ -954,14 +942,16 @@ fn pane_block(title: String, focused: bool) -> Block<'static> {
     };
     let style = if focused {
         Style::default()
-            .fg(Color::Cyan)
+            .fg(Color::LightMagenta)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
     };
     Block::default()
         .borders(Borders::ALL)
-        .border_set(border::THICK)
+        .border_set(border::DOUBLE)
         .border_style(style)
         .padding(Padding::horizontal(2))
         .title(title)
@@ -972,7 +962,7 @@ fn header_style(app: &App) -> Style {
         Style::default().add_modifier(Modifier::BOLD)
     } else {
         Style::default()
-            .fg(Color::Cyan)
+            .fg(Color::White)
             .add_modifier(Modifier::BOLD)
     }
 }
@@ -1271,7 +1261,14 @@ fn truncate(value: &str, width: usize) -> String {
 fn minimum_width(mode: Mode) -> u16 {
     match mode {
         Mode::Compact => 56,
-        Mode::Split => 98,
+        Mode::Split => 60,
+    }
+}
+
+fn minimum_height(mode: Mode) -> u16 {
+    match mode {
+        Mode::Compact => 12,
+        Mode::Split => 18,
     }
 }
 

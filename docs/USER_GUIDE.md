@@ -35,7 +35,7 @@ Good starting shape:
 
 - `2-5` repos
 - `10s` interval
-- `split` mode in a wide terminal
+- `split` mode when you want stacked repo panes with full terminal width
 
 Current planning envelope from the implementation:
 
@@ -92,8 +92,8 @@ Starter config:
 host = "github.com"
 interval = 10
 mode = "split"
-actions_limit = 10
-prs_limit = 30
+actions_limit = 25
+prs_limit = 50
 
 repos = [
   "owner/repo-a",
@@ -123,18 +123,23 @@ Prism has two launch-time modes:
 
 ### `split`
 
-Use `split` when your terminal is wide enough for side-by-side repo panes.
+Use `split` when you want repo panes stacked top-bottom so each one can use the full terminal width.
 
 Current minimum width:
 
-- `98` columns
+- `60` columns
+
+Current minimum height:
+
+- `18` rows
 
 What you get:
 
-- repo A on the left
-- repo B on the right
+- repo A in the top pane
+- repo B in the bottom pane
 - `Tab` toggles the focused repo pane between Actions and Pull Requests
-- `Left` and `Right` move focus between repos
+- `Left` and `Right` switch focus between repo panes
+- both repo panes can keep their own inline detail open at the same time
 - status bar across the bottom
 
 ### `compact`
@@ -151,7 +156,7 @@ What you get:
 - Pull Requests below
 - same status bar and keybindings as split mode
 
-If the terminal is too narrow for the chosen mode, Prism shows a resize warning instead of rendering broken tables.
+If the terminal is too small for the chosen mode, Prism shows a resize warning instead of rendering broken tables.
 
 ## 6. Read The Actions Pane
 
@@ -259,6 +264,8 @@ PR detail currently shows:
 - a progress bar for each pending, running, or completed check
 - explicit `[PASS]`, `[FAIL]`, `[WAIT]`, and `[RUN ]` badges
 
+In `split`, opening detail in one repo pane does not close detail already open in the other pane.
+
 Use `l` or `o` to open the selected PR or workflow run in the browser.
 
 ## 9. Use The Keyboard Efficiently
@@ -275,7 +282,7 @@ Core controls:
 - `G`: jump to bottom
 - `Enter`: open detail for the selected workflow run or PR
 - `l` or `o`: open the selected PR or workflow run in the browser
-- `Esc`: close detail or help
+- `Esc`: close detail in the focused pane or help
 - `?`: toggle help
 
 There is no live mode toggle key. Choose `--mode split` or `--mode compact` when starting Prism.
@@ -348,12 +355,12 @@ Checks:
 - verify the source
 - if relying on `gh`, verify `gh auth token --hostname <host>` works
 
-### Terminal too narrow
+### Terminal too small
 
 Fix:
 
 - switch to `--mode compact`
-- widen the terminal
+- widen or heighten the terminal
 
 ### Browser open command not working
 
