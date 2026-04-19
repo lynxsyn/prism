@@ -123,16 +123,18 @@ Prism has two launch-time modes:
 
 ### `split`
 
-Use `split` when your terminal is wide enough for side-by-side panes.
+Use `split` when your terminal is wide enough for side-by-side repo panes.
 
 Current minimum width:
 
-- `96` columns
+- `98` columns
 
 What you get:
 
-- Actions on the left
-- Pull Requests on the right
+- repo A on the left
+- repo B on the right
+- `Tab` toggles the focused repo pane between Actions and Pull Requests
+- `Left` and `Right` move focus between repos
 - status bar across the bottom
 
 ### `compact`
@@ -141,7 +143,7 @@ Use `compact` for a narrow side pane or split terminal.
 
 Current minimum width:
 
-- `52` columns
+- `56` columns
 
 What you get:
 
@@ -157,7 +159,6 @@ The Actions pane is the live CI watch surface.
 
 Current columns:
 
-- `Repo`
 - `Workflow`
 - `Branch`
 - `State`
@@ -189,7 +190,6 @@ The Pull Requests pane shows open PRs only.
 
 Current columns:
 
-- `Repo`
 - `#`
 - `Title`
 - `Author`
@@ -227,7 +227,7 @@ Use this pane to answer:
 
 ## 8. Open Workflow Detail
 
-Press `l` while focused on the Actions pane.
+Press `Enter` while focused on an Actions list.
 
 Workflow detail currently shows:
 
@@ -248,7 +248,9 @@ Workflow detail is intentionally bounded:
 - no per-step expansion tree
 - no rerun or cancel controls
 
-There is no local PR detail screen yet.
+Workflow detail opens inline in the current pane instead of as a floating window.
+
+There is no local PR detail screen yet. Use `l` or `o` to open the selected PR in the browser.
 
 ## 9. Use The Keyboard Efficiently
 
@@ -256,13 +258,14 @@ Core controls:
 
 - `q`: quit
 - `r`: refresh now
-- `Tab`: switch focus between panes
+- `Tab`: toggle the focused pane between Actions and Pull Requests
+- `Left` / `Right`: switch focus between repo panes in `split`
 - `j` / `Down`: move down
 - `k` / `Up`: move up
 - `g`: jump to top
 - `G`: jump to bottom
-- `l`: open workflow detail
-- `o` or `Enter`: open the selected PR or workflow run in the browser
+- `Enter`: open workflow detail for the selected workflow run
+- `l` or `o`: open the selected PR or workflow run in the browser
 - `Esc`: close detail or help
 - `?`: toggle help
 
@@ -292,7 +295,7 @@ Current rate-limit backoff:
 
 ## 11. Open In The Browser
 
-Press `o` or `Enter` on:
+Press `l` or `o` on:
 
 - a selected workflow run
 - a selected PR

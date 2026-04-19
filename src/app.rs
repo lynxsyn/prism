@@ -19,17 +19,41 @@ use crate::browser::open_target;
 use crate::config::EffectiveConfig;
 use crate::github::GitHubClient;
 use crate::model::{
-    DashboardState, DetailTarget, FocusPane, PullRequestSummary, WorkflowRunSummary,
+    DashboardState, DetailTarget, FocusPane, Mode, PullRequestSummary, RepoTarget,
+    WorkflowRunSummary,
 };
 use crate::poller::{DashboardUpdate, PollerControl, PollerMessage, apply_update, spawn_poller};
 use crate::ui;
 
+pub struct SplitPaneState {
+    pub content: FocusPane,
+    pub table_state: RefCell<TableState>,
+    pub selected_action_id: Option<u64>,
+    pub selected_pr_id: Option<String>,
+    pub actions_index: usize,
+    pub prs_index: usize,
+}
+
+impl SplitPaneState {
+    fn new(content: FocusPane) -> Self {
+        Self {
+            content,
+            table_state: RefCell::new(TableState::default()),
+            selected_action_id: None,
+            selected_pr_id: None,
+            actions_index: 0,
+            prs_index: 0,
+        }
+    }
+}
+
 pub struct App {
     pub config: EffectiveConfig,
     pub state: DashboardState,
-    pub focus: FocusPane,
+    pub compact_focus: FocusPane,
+    pub split_focus: usize,
     pub show_help: bool,
-    pub detail_open: bool,
+    pub detail_pane: Option<usize>,
     pub detail_scroll: usize,
     pub spinner_index: usize,
     pub actions_table_state: RefCell<TableState>,
@@ -38,6 +62,7 @@ pub struct App {
     pub selected_pr_id: Option<String>,
     pub actions_index: usize,
     pub prs_index: usize,
+    pub split_panes: [SplitPaneState; 2],
 }
 
 impl App {
@@ -45,9 +70,10 @@ impl App {
         Self {
             config,
             state: DashboardState::default(),
-            focus: FocusPane::Actions,
+            compact_focus: FocusPane::Actions,
+            split_focus: 0,
             show_help: false,
-            detail_open: false,
+            detail_pane: None,
             detail_scroll: 0,
             spinner_index: 0,
             actions_table_state: RefCell::new(TableState::default()),
@@ -56,38 +82,115 @@ impl App {
             selected_pr_id: None,
             actions_index: 0,
             prs_index: 0,
+            split_panes: [
+                SplitPaneState::new(FocusPane::Actions),
+                SplitPaneState::new(FocusPane::Actions),
+            ],
+        }
+    }
+
+    pub(crate) fn split_repo(&self, pane_index: usize) -> Option<&RepoTarget> {
+        self.config.repos.get(pane_index)
+    }
+
+    pub(crate) fn split_actions(&self, pane_index: usize) -> Vec<&WorkflowRunSummary> {
+        let Some(repo) = self.split_repo(pane_index) else {
+            return Vec::new();
+        };
+        let slug = repo.slug();
+        self.state
+            .actions
+            .iter()
+            .filter(|run| run.repo.slug() == slug)
+            .collect()
+    }
+
+    pub(crate) fn split_pulls(&self, pane_index: usize) -> Vec<&PullRequestSummary> {
+        let Some(repo) = self.split_repo(pane_index) else {
+            return Vec::new();
+        };
+        let slug = repo.slug();
+        self.state
+            .pulls
+            .iter()
+            .filter(|pr| pr.repo.slug() == slug)
+            .collect()
+    }
+
+    pub(crate) fn split_detail_open(&self, pane_index: usize) -> bool {
+        self.config.mode == Mode::Split && self.detail_pane == Some(pane_index)
+    }
+
+    pub(crate) fn detail_open(&self) -> bool {
+        self.detail_pane.is_some()
+    }
+
+    pub(crate) fn focused_view(&self) -> FocusPane {
+        match self.config.mode {
+            Mode::Compact => self.compact_focus,
+            Mode::Split => self.split_panes[self.split_focus].content,
+        }
+    }
+
+    pub(crate) fn current_repo_label(&self) -> Option<String> {
+        match self.config.mode {
+            Mode::Compact => None,
+            Mode::Split => self.split_repo(self.split_focus).map(RepoTarget::slug),
         }
     }
 
     fn open_target(&self) -> Option<&str> {
-        if self.detail_open {
+        if self.detail_open() {
             return self
                 .state
                 .detail
                 .as_ref()
                 .map(|detail| detail.summary.url.as_str());
         }
-        match self.focus {
+        match self.focused_view() {
             FocusPane::Actions => self.current_action().map(|run| run.url.as_str()),
             FocusPane::PullRequests => self.current_pr().map(|pr| pr.url.as_str()),
         }
     }
 
-    fn current_action(&self) -> Option<&WorkflowRunSummary> {
-        self.state.actions.get(self.actions_index)
+    pub(crate) fn current_action(&self) -> Option<&WorkflowRunSummary> {
+        match self.config.mode {
+            Mode::Compact => self.state.actions.get(self.actions_index),
+            Mode::Split => self.current_split_action(self.split_focus),
+        }
     }
 
-    fn current_pr(&self) -> Option<&PullRequestSummary> {
-        self.state.pulls.get(self.prs_index)
+    pub(crate) fn current_pr(&self) -> Option<&PullRequestSummary> {
+        match self.config.mode {
+            Mode::Compact => self.state.pulls.get(self.prs_index),
+            Mode::Split => self.current_split_pr(self.split_focus),
+        }
+    }
+
+    pub(crate) fn current_split_action(&self, pane_index: usize) -> Option<&WorkflowRunSummary> {
+        let index = self.split_panes[pane_index].actions_index;
+        self.split_actions(pane_index).into_iter().nth(index)
+    }
+
+    pub(crate) fn current_split_pr(&self, pane_index: usize) -> Option<&PullRequestSummary> {
+        let index = self.split_panes[pane_index].prs_index;
+        self.split_pulls(pane_index).into_iter().nth(index)
     }
 
     fn move_selection(&mut self, delta: i32) {
-        if self.detail_open {
+        match self.config.mode {
+            Mode::Compact => self.move_compact_selection(delta),
+            Mode::Split => self.move_split_selection(delta),
+        }
+    }
+
+    fn move_compact_selection(&mut self, delta: i32) {
+        if self.detail_open() {
             self.detail_scroll = self.detail_scroll.saturating_add_signed(delta as isize);
             return;
         }
 
-        match self.focus {
+        match self.compact_focus {
             FocusPane::Actions => {
                 if self.state.actions.is_empty() {
                     return;
@@ -124,13 +227,68 @@ impl App {
         }
     }
 
+    fn move_split_selection(&mut self, delta: i32) {
+        if self.detail_pane == Some(self.split_focus) {
+            self.detail_scroll = self.detail_scroll.saturating_add_signed(delta as isize);
+            return;
+        }
+
+        let pane_index = self.split_focus;
+        match self.split_panes[pane_index].content {
+            FocusPane::Actions => {
+                let row_ids = self
+                    .split_actions(pane_index)
+                    .into_iter()
+                    .map(|run| run.id)
+                    .collect::<Vec<_>>();
+                if row_ids.is_empty() {
+                    return;
+                }
+                let max = row_ids.len().saturating_sub(1);
+                self.split_panes[pane_index].actions_index = self.split_panes[pane_index]
+                    .actions_index
+                    .saturating_add_signed(delta as isize)
+                    .min(max);
+                self.split_panes[pane_index].selected_action_id = row_ids
+                    .get(self.split_panes[pane_index].actions_index)
+                    .copied();
+                self.sync_split_table_state(pane_index);
+            }
+            FocusPane::PullRequests => {
+                let row_ids = self
+                    .split_pulls(pane_index)
+                    .into_iter()
+                    .map(PullRequestSummary::stable_id)
+                    .collect::<Vec<_>>();
+                if row_ids.is_empty() {
+                    return;
+                }
+                let max = row_ids.len().saturating_sub(1);
+                self.split_panes[pane_index].prs_index = self.split_panes[pane_index]
+                    .prs_index
+                    .saturating_add_signed(delta as isize)
+                    .min(max);
+                self.split_panes[pane_index].selected_pr_id =
+                    row_ids.get(self.split_panes[pane_index].prs_index).cloned();
+                self.sync_split_table_state(pane_index);
+            }
+        }
+    }
+
     fn jump_to(&mut self, bottom: bool) {
-        if self.detail_open {
+        match self.config.mode {
+            Mode::Compact => self.jump_compact(bottom),
+            Mode::Split => self.jump_split(bottom),
+        }
+    }
+
+    fn jump_compact(&mut self, bottom: bool) {
+        if self.detail_open() {
             self.detail_scroll = if bottom { usize::MAX / 4 } else { 0 };
             return;
         }
 
-        match self.focus {
+        match self.compact_focus {
             FocusPane::Actions if !self.state.actions.is_empty() => {
                 self.actions_index = if bottom {
                     self.state.actions.len() - 1
@@ -162,7 +320,104 @@ impl App {
         }
     }
 
+    fn jump_split(&mut self, bottom: bool) {
+        if self.detail_pane == Some(self.split_focus) {
+            self.detail_scroll = if bottom { usize::MAX / 4 } else { 0 };
+            return;
+        }
+
+        let pane_index = self.split_focus;
+        match self.split_panes[pane_index].content {
+            FocusPane::Actions => {
+                let row_ids = self
+                    .split_actions(pane_index)
+                    .into_iter()
+                    .map(|run| run.id)
+                    .collect::<Vec<_>>();
+                if row_ids.is_empty() {
+                    return;
+                }
+                self.split_panes[pane_index].actions_index =
+                    if bottom { row_ids.len() - 1 } else { 0 };
+                self.split_panes[pane_index].selected_action_id = row_ids
+                    .get(self.split_panes[pane_index].actions_index)
+                    .copied();
+            }
+            FocusPane::PullRequests => {
+                let row_ids = self
+                    .split_pulls(pane_index)
+                    .into_iter()
+                    .map(PullRequestSummary::stable_id)
+                    .collect::<Vec<_>>();
+                if row_ids.is_empty() {
+                    return;
+                }
+                self.split_panes[pane_index].prs_index = if bottom { row_ids.len() - 1 } else { 0 };
+                self.split_panes[pane_index].selected_pr_id =
+                    row_ids.get(self.split_panes[pane_index].prs_index).cloned();
+            }
+        }
+        self.sync_split_table_state(pane_index);
+    }
+
+    fn open_detail(&mut self, poller_control: &PollerControl) {
+        let Some(run) = self.current_action().cloned() else {
+            return;
+        };
+        self.detail_pane = Some(match self.config.mode {
+            Mode::Compact => 0,
+            Mode::Split => self.split_focus,
+        });
+        self.detail_scroll = 0;
+        poller_control.set_detail_target(Some(DetailTarget {
+            repo: run.repo.clone(),
+            run_id: run.id,
+        }));
+    }
+
+    fn toggle_focus_or_view(&mut self) {
+        match self.config.mode {
+            Mode::Compact if !self.detail_open() => {
+                self.compact_focus = self.compact_focus.toggle();
+            }
+            Mode::Split if self.detail_pane != Some(self.split_focus) => {
+                let pane = &mut self.split_panes[self.split_focus];
+                pane.content = pane.content.toggle();
+                self.sync_split_table_state(self.split_focus);
+            }
+            _ => {}
+        }
+    }
+
+    fn switch_split_focus(&mut self, delta: i32) {
+        if self.config.mode != Mode::Split {
+            return;
+        }
+        let max = self
+            .config
+            .repos
+            .len()
+            .min(self.split_panes.len())
+            .saturating_sub(1);
+        self.split_focus = self
+            .split_focus
+            .saturating_add_signed(delta as isize)
+            .min(max);
+        self.sync_split_table_state(self.split_focus);
+    }
+
+    fn close_detail(&mut self, poller_control: &PollerControl) {
+        self.detail_pane = None;
+        self.detail_scroll = 0;
+        poller_control.set_detail_target(None);
+    }
+
     fn anchor_selection(&mut self) {
+        self.anchor_compact_selection();
+        self.anchor_split_selection();
+    }
+
+    fn anchor_compact_selection(&mut self) {
         if !self.state.actions.is_empty() {
             if let Some(selected_id) = self.selected_action_id {
                 if let Some(index) = self
@@ -221,6 +476,109 @@ impl App {
         }
     }
 
+    fn anchor_split_selection(&mut self) {
+        for pane_index in 0..self.split_panes.len() {
+            let Some(repo) = self.split_repo(pane_index) else {
+                self.split_panes[pane_index].selected_action_id = None;
+                self.split_panes[pane_index].selected_pr_id = None;
+                self.split_panes[pane_index].actions_index = 0;
+                self.split_panes[pane_index].prs_index = 0;
+                self.split_panes[pane_index]
+                    .table_state
+                    .borrow_mut()
+                    .select(None);
+                continue;
+            };
+            let repo_slug = repo.slug();
+
+            let visible_actions = self
+                .state
+                .actions
+                .iter()
+                .filter(|run| run.repo.slug() == repo_slug)
+                .collect::<Vec<_>>();
+            if !visible_actions.is_empty() {
+                if let Some(selected_id) = self.split_panes[pane_index].selected_action_id {
+                    if let Some(index) =
+                        visible_actions.iter().position(|run| run.id == selected_id)
+                    {
+                        self.split_panes[pane_index].actions_index = index;
+                    } else {
+                        self.split_panes[pane_index].actions_index = self.split_panes[pane_index]
+                            .actions_index
+                            .min(visible_actions.len() - 1);
+                        self.split_panes[pane_index].selected_action_id = visible_actions
+                            .get(self.split_panes[pane_index].actions_index)
+                            .map(|run| run.id);
+                    }
+                } else {
+                    self.split_panes[pane_index].actions_index = 0;
+                    self.split_panes[pane_index].selected_action_id =
+                        visible_actions.first().map(|run| run.id);
+                }
+            } else {
+                self.split_panes[pane_index].actions_index = 0;
+                self.split_panes[pane_index].selected_action_id = None;
+            }
+
+            let visible_pulls = self
+                .state
+                .pulls
+                .iter()
+                .filter(|pr| pr.repo.slug() == repo_slug)
+                .collect::<Vec<_>>();
+            if !visible_pulls.is_empty() {
+                if let Some(selected_id) = &self.split_panes[pane_index].selected_pr_id {
+                    if let Some(index) = visible_pulls
+                        .iter()
+                        .position(|pr| pr.stable_id() == *selected_id)
+                    {
+                        self.split_panes[pane_index].prs_index = index;
+                    } else {
+                        self.split_panes[pane_index].prs_index = self.split_panes[pane_index]
+                            .prs_index
+                            .min(visible_pulls.len() - 1);
+                        self.split_panes[pane_index].selected_pr_id = visible_pulls
+                            .get(self.split_panes[pane_index].prs_index)
+                            .map(|pr| pr.stable_id());
+                    }
+                } else {
+                    self.split_panes[pane_index].prs_index = 0;
+                    self.split_panes[pane_index].selected_pr_id =
+                        visible_pulls.first().map(|pr| pr.stable_id());
+                }
+            } else {
+                self.split_panes[pane_index].prs_index = 0;
+                self.split_panes[pane_index].selected_pr_id = None;
+            }
+
+            self.sync_split_table_state(pane_index);
+        }
+    }
+
+    fn sync_split_table_state(&self, pane_index: usize) {
+        let selected = match self.split_panes[pane_index].content {
+            FocusPane::Actions => {
+                if self.split_actions(pane_index).is_empty() {
+                    None
+                } else {
+                    Some(self.split_panes[pane_index].actions_index)
+                }
+            }
+            FocusPane::PullRequests => {
+                if self.split_pulls(pane_index).is_empty() {
+                    None
+                } else {
+                    Some(self.split_panes[pane_index].prs_index)
+                }
+            }
+        };
+        self.split_panes[pane_index]
+            .table_state
+            .borrow_mut()
+            .select(selected);
+    }
+
     fn apply_update(&mut self, update: DashboardUpdate) {
         apply_update(&mut self.state, update);
         if !self.state.errors.is_empty() {
@@ -272,15 +630,13 @@ pub fn run_app(config: EffectiveConfig, auth: ResolvedAuth) -> Result<()> {
                 KeyCode::Esc => {
                     if app.show_help {
                         app.show_help = false;
-                    } else if app.detail_open {
-                        app.detail_open = false;
-                        app.detail_scroll = 0;
-                        poller_control.set_detail_target(None);
+                    } else if app.detail_open() {
+                        app.close_detail(&poller_control);
                     }
                 }
-                KeyCode::Tab if !app.detail_open => {
-                    app.focus = app.focus.toggle();
-                }
+                KeyCode::Left => app.switch_split_focus(-1),
+                KeyCode::Right => app.switch_split_focus(1),
+                KeyCode::Tab if !app.show_help => app.toggle_focus_or_view(),
                 KeyCode::Char('r') => {
                     poller_control.request_refresh();
                 }
@@ -288,19 +644,8 @@ pub fn run_app(config: EffectiveConfig, auth: ResolvedAuth) -> Result<()> {
                 KeyCode::Up | KeyCode::Char('k') => app.move_selection(-1),
                 KeyCode::Char('g') => app.jump_to(false),
                 KeyCode::Char('G') => app.jump_to(true),
-                KeyCode::Char('l')
-                    if !app.show_help && !app.detail_open && app.focus == FocusPane::Actions =>
-                {
-                    if let Some(run) = app.current_action().cloned() {
-                        app.detail_open = true;
-                        app.detail_scroll = 0;
-                        poller_control.set_detail_target(Some(DetailTarget {
-                            repo: run.repo.clone(),
-                            run_id: run.id,
-                        }));
-                    }
-                }
-                KeyCode::Enter | KeyCode::Char('o') if !app.show_help => {
+                KeyCode::Enter if !app.show_help => app.open_detail(&poller_control),
+                KeyCode::Char('l') | KeyCode::Char('o') if !app.show_help => {
                     if let Some(target) = app.open_target() {
                         let _ = open_target(target, app.config.ui.open_command.as_deref());
                     }

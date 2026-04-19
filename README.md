@@ -8,7 +8,7 @@ This README documents the current shipped CLI and TUI behavior in `prism 0.1.0`.
 
 Prism currently provides:
 
-- a live TUI with an Actions pane and a Pull Requests pane
+- a live TUI with repo-first split panes and a stacked compact mode
 - two layouts: `split` and `compact`
 - workflow run drill-down with jobs, step progress, and failed-step labels
 - browser open for the selected PR or workflow run
@@ -218,18 +218,17 @@ CLI flags override env and config values. Config overrides built-in defaults.
 
 ### Layout modes
 
-- `split`: side-by-side Actions and Pull Requests panes; Prism requires at least `96` columns for this mode
-- `compact`: stacked panes; Prism requires at least `52` columns for this mode
+- `split`: side-by-side repo panes; each pane can toggle between Actions and Pull Requests and Prism requires at least `98` columns for this mode
+- `compact`: stacked Actions and Pull Requests panes; Prism requires at least `56` columns for this mode
 
 If the terminal is narrower than the current mode supports, Prism shows a resize warning instead of trying to squeeze the tables into unreadable columns.
 
 ### Actions pane
 
-The Actions pane shows recent workflow runs across the configured repos.
+In `split`, each repo pane shows Actions or Pull Requests for one configured repo. In `compact`, Actions stay in the top pane.
 
 Current columns:
 
-- `Repo`
 - `Workflow`
 - `Branch`
 - `State`
@@ -245,11 +244,10 @@ Behavior:
 
 ### Pull Requests pane
 
-The Pull Requests pane shows open PRs only.
+In `split`, use `Tab` on the focused repo pane to switch it to Pull Requests. In `compact`, Pull Requests stay in the bottom pane.
 
 Current columns:
 
-- `Repo`
 - `#`
 - `Title`
 - `Author`
@@ -266,7 +264,7 @@ Behavior:
 
 ### Workflow detail
 
-Press `l` from the Actions pane to open workflow detail for the selected run.
+Press `Enter` from an Actions list to open workflow detail inside the current pane.
 
 The detail view currently shows:
 
@@ -279,7 +277,7 @@ The detail view currently shows:
 - `indeterminate` when Prism cannot trust the step progress math
 - the first failed step label when GitHub exposes it
 
-There is no local PR detail view yet. Pressing `l` is for Actions drill-down only.
+There is no local PR detail view yet. Press `l` or `o` to open the selected PR or workflow run in the browser.
 
 ### Status bar and refresh behavior
 
@@ -304,13 +302,14 @@ Polling behavior:
 
 - `q`: quit
 - `r`: force refresh now
-- `Tab`: switch focus between Actions and Pull Requests
+- `Tab`: toggle the focused pane between Actions and Pull Requests
+- `Left` / `Right`: switch focus between repo panes in `split`
 - `j` / `Down`: move down
 - `k` / `Up`: move up
 - `g`: jump to top
 - `G`: jump to bottom
-- `l`: open workflow detail for the selected Actions row
-- `o` or `Enter`: open the selected PR or workflow run in the browser
+- `Enter`: open workflow detail for the selected Actions row
+- `l` or `o`: open the selected PR or workflow run in the browser
 - `Esc`: close help or workflow detail
 - `?`: toggle the help overlay
 
