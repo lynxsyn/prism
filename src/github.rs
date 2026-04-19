@@ -13,8 +13,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::model::{
-    PullRequestSummary, RateLimitState, RepoTarget, WorkflowJobSummary, WorkflowRunDetail,
-    WorkflowRunSummary,
+    PullRequestCheckSummary, PullRequestDetail, PullRequestSummary, RateLimitState, RepoTarget,
+    WorkflowJobSummary, WorkflowRunDetail, WorkflowRunSummary,
 };
 
 const GRAPHQL_PR_QUERY: &str = r#"
@@ -40,6 +40,58 @@ query($owner:String!, $name:String!, $limit:Int!) {
         }
         statusCheckRollup {
           state
+        }
+      }
+    }
+  }
+}
+"#;
+
+const GRAPHQL_PR_DETAIL_QUERY: &str = r#"
+query($owner:String!, $name:String!, $number:Int!) {
+  repository(owner:$owner, name:$name) {
+    pullRequest(number:$number) {
+      number
+      title
+      isDraft
+      updatedAt
+      url
+      reviewDecision
+      author { login }
+      reviewRequests(first:20) {
+        nodes {
+          requestedReviewer {
+            __typename
+            ... on User { login }
+            ... on Team { slug name }
+          }
+        }
+      }
+      statusCheckRollup {
+        state
+        contexts(first:50) {
+          nodes {
+            __typename
+            ... on CheckRun {
+              name
+              status
+              conclusion
+              detailsUrl
+              startedAt
+              completedAt
+              checkSuite {
+                workflowRun {
+                  workflow { name }
+                }
+              }
+            }
+            ... on StatusContext {
+              context
+              state
+              targetUrl
+              createdAt
+            }
+          }
         }
       }
     }
@@ -441,6 +493,322 @@ impl GitHubClient {
         })
     }
 
+    pub fn fetch_pull_request_detail(
+        &self,
+        repo: &RepoTarget,
+        number: u64,
+        viewer_login: &str,
+    ) -> GitHubRequestResult<FetchResult<PullRequestDetail>> {
+        #[derive(Debug, Deserialize)]
+        struct GraphQLResponse {
+            data: Option<GraphQLData>,
+            errors: Option<Vec<GraphQLError>>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct GraphQLError {
+            message: String,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct GraphQLData {
+            repository: Option<GraphQLRepository>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct GraphQLRepository {
+            #[serde(rename = "pullRequest")]
+            pull_request: Option<GraphQLPullRequest>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct GraphQLPullRequest {
+            number: u64,
+            title: String,
+            #[serde(rename = "isDraft")]
+            is_draft: bool,
+            #[serde(rename = "updatedAt")]
+            updated_at: DateTime<Utc>,
+            url: String,
+            #[serde(rename = "reviewDecision")]
+            review_decision: Option<String>,
+            author: Option<GraphQLActor>,
+            #[serde(rename = "reviewRequests")]
+            review_requests: GraphQLReviewRequestConnection,
+            #[serde(rename = "statusCheckRollup")]
+            status_check_rollup: Option<GraphQLStatusCheckRollup>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct GraphQLActor {
+            login: String,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct GraphQLReviewRequestConnection {
+            nodes: Vec<GraphQLReviewRequest>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct GraphQLReviewRequest {
+            #[serde(rename = "requestedReviewer")]
+            requested_reviewer: Option<GraphQLRequestedReviewer>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct GraphQLRequestedReviewer {
+            #[serde(rename = "__typename")]
+            kind: String,
+            login: Option<String>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct GraphQLStatusCheckRollup {
+            state: Option<String>,
+            contexts: GraphQLCheckContextConnection,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct GraphQLCheckContextConnection {
+            nodes: Vec<GraphQLCheckNode>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct GraphQLCheckNode {
+            #[serde(rename = "__typename")]
+            kind: String,
+            name: Option<String>,
+            status: Option<String>,
+            conclusion: Option<String>,
+            #[serde(rename = "detailsUrl")]
+            details_url: Option<String>,
+            #[serde(rename = "startedAt")]
+            started_at: Option<DateTime<Utc>>,
+            #[serde(rename = "completedAt")]
+            completed_at: Option<DateTime<Utc>>,
+            #[serde(rename = "checkSuite")]
+            check_suite: Option<GraphQLCheckSuite>,
+            context: Option<String>,
+            state: Option<String>,
+            #[serde(rename = "targetUrl")]
+            target_url: Option<String>,
+            #[serde(rename = "createdAt")]
+            created_at: Option<DateTime<Utc>>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct GraphQLCheckSuite {
+            #[serde(rename = "workflowRun")]
+            workflow_run: Option<GraphQLWorkflowRun>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct GraphQLWorkflowRun {
+            workflow: Option<GraphQLWorkflow>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct GraphQLWorkflow {
+            name: Option<String>,
+        }
+
+        let payload = json!({
+            "query": GRAPHQL_PR_DETAIL_QUERY,
+            "variables": {
+                "owner": repo.owner,
+                "name": repo.name,
+                "number": number as i64,
+            }
+        });
+
+        let response = self
+            .http
+            .post(self.graphql_url())
+            .json(&payload)
+            .send()
+            .map_err(|error| {
+                GitHubRequestError::new(
+                    format!("failed to fetch pull request detail: {error}"),
+                    None,
+                )
+            })?;
+        let rate_limit = parse_rate_limit(response.headers());
+        ensure_success(&response, "fetch pull request detail", rate_limit.clone())?;
+        let parsed: GraphQLResponse = response.json().map_err(|error| {
+            GitHubRequestError::new(
+                format!("failed to parse pull request detail: {error}"),
+                rate_limit.clone(),
+            )
+        })?;
+
+        if let Some(errors) = parsed.errors {
+            let joined = errors
+                .into_iter()
+                .map(|error| error.message)
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(GitHubRequestError::new(
+                format!("GitHub GraphQL error: {joined}"),
+                rate_limit,
+            ));
+        }
+
+        let pr = parsed
+            .data
+            .and_then(|data| data.repository)
+            .and_then(|repo| repo.pull_request)
+            .ok_or_else(|| {
+                GitHubRequestError::new(
+                    "pull request missing from GraphQL response",
+                    rate_limit.clone(),
+                )
+            })?;
+
+        let review_requested_for_viewer = pr.review_requests.nodes.into_iter().any(|node| {
+            node.requested_reviewer
+                .as_ref()
+                .is_some_and(|reviewer| match reviewer.kind.as_str() {
+                    "User" => reviewer
+                        .login
+                        .as_ref()
+                        .is_some_and(|login| login.eq_ignore_ascii_case(viewer_login)),
+                    "Team" => false,
+                    _ => false,
+                })
+        });
+
+        let ci_rollup = pr
+            .status_check_rollup
+            .as_ref()
+            .and_then(|rollup| rollup.state.clone());
+
+        let summary = PullRequestSummary {
+            repo: repo.clone(),
+            number: pr.number,
+            title: pr.title,
+            author: pr
+                .author
+                .map(|author| author.login)
+                .unwrap_or_else(|| "ghost".to_string()),
+            is_draft: pr.is_draft,
+            review_decision: pr.review_decision,
+            review_requested_for_viewer,
+            ci_rollup,
+            updated_at: pr.updated_at,
+            url: pr.url,
+        };
+
+        let mut checks = pr
+            .status_check_rollup
+            .map(|rollup| {
+                rollup
+                    .contexts
+                    .nodes
+                    .into_iter()
+                    .map(|node| match node.kind.as_str() {
+                        "CheckRun" => PullRequestCheckSummary {
+                            name: node.name.unwrap_or_else(|| "check".to_string()),
+                            workflow_name: node
+                                .check_suite
+                                .and_then(|suite| suite.workflow_run)
+                                .and_then(|run| run.workflow)
+                                .and_then(|workflow| workflow.name),
+                            status: node.status.unwrap_or_else(|| "PENDING".to_string()),
+                            conclusion: node.conclusion,
+                            started_at: node.started_at,
+                            completed_at: node.completed_at,
+                            url: node.details_url,
+                        },
+                        _ => {
+                            let state = node.state.unwrap_or_else(|| "PENDING".to_string());
+                            let conclusion = match state.as_str() {
+                                "SUCCESS" => Some("SUCCESS".to_string()),
+                                "FAILURE" | "ERROR" => Some("FAILURE".to_string()),
+                                "SKIPPED" | "NEUTRAL" => Some(state.clone()),
+                                _ => None,
+                            };
+                            let started_at = node.created_at;
+                            PullRequestCheckSummary {
+                                name: node.context.unwrap_or_else(|| "status".to_string()),
+                                workflow_name: None,
+                                status: if conclusion.is_some() {
+                                    "COMPLETED".to_string()
+                                } else {
+                                    state.clone()
+                                },
+                                conclusion,
+                                started_at,
+                                completed_at: if matches!(
+                                    state.as_str(),
+                                    "SUCCESS" | "FAILURE" | "ERROR" | "SKIPPED" | "NEUTRAL"
+                                ) {
+                                    started_at
+                                } else {
+                                    None
+                                },
+                                url: node.target_url,
+                            }
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        checks.sort_by_key(check_sort_key);
+
+        let total_checks = checks.len();
+        let completed_checks = checks
+            .iter()
+            .filter(|check| check_status_bucket(check).0)
+            .count();
+        let passing_checks = checks
+            .iter()
+            .filter(|check| {
+                matches!(
+                    check.conclusion.as_deref(),
+                    Some("SUCCESS" | "SKIPPED" | "NEUTRAL")
+                )
+            })
+            .count();
+        let failing_checks = checks
+            .iter()
+            .filter(|check| {
+                matches!(
+                    check.conclusion.as_deref(),
+                    Some("FAILURE" | "ERROR" | "CANCELLED" | "TIMED_OUT" | "ACTION_REQUIRED")
+                )
+            })
+            .count();
+        let running_checks = checks
+            .iter()
+            .filter(|check| matches!(check.status.as_str(), "IN_PROGRESS" | "RUNNING"))
+            .count();
+        let pending_checks = checks
+            .iter()
+            .filter(|check| {
+                matches!(
+                    check.status.as_str(),
+                    "PENDING" | "QUEUED" | "EXPECTED" | "WAITING" | "REQUESTED"
+                )
+            })
+            .count();
+
+        Ok(FetchResult {
+            value: PullRequestDetail {
+                summary,
+                checks,
+                total_checks,
+                completed_checks,
+                passing_checks,
+                failing_checks,
+                running_checks,
+                pending_checks,
+            },
+            rate_limit,
+            etag: None,
+            not_modified: false,
+        })
+    }
+
     fn api_url(&self, path: &str) -> String {
         format!("{}/{}", self.api_base, path.trim_start_matches('/'))
     }
@@ -557,6 +925,26 @@ fn map_job_summary(job: RestWorkflowJob) -> WorkflowJobSummary {
         failed_step_name,
         indeterminate_progress,
     }
+}
+
+fn check_sort_key(check: &PullRequestCheckSummary) -> (u8, String) {
+    let rank = match check_status_bucket(check) {
+        (false, _, true) => 0,
+        (false, true, _) => 1,
+        (true, _, true) => 2,
+        _ => 3,
+    };
+    (rank, check.name.clone())
+}
+
+fn check_status_bucket(check: &PullRequestCheckSummary) -> (bool, bool, bool) {
+    let completed = check.status == "COMPLETED";
+    let running = matches!(check.status.as_str(), "IN_PROGRESS" | "RUNNING");
+    let failed = matches!(
+        check.conclusion.as_deref(),
+        Some("FAILURE" | "ERROR" | "CANCELLED" | "TIMED_OUT" | "ACTION_REQUIRED")
+    );
+    (completed, running, failed)
 }
 
 fn job_sort_key(job: &WorkflowJobSummary) -> (u8, String) {

@@ -8,7 +8,8 @@ use chrono::Utc;
 use crate::config::EffectiveConfig;
 use crate::github::{EtagCache, GitHubClient, merge_rate_limits};
 use crate::model::{
-    DashboardState, DetailTarget, PullRequestSummary, RateLimitState, WorkflowRunSummary,
+    DashboardState, DetailTarget, DetailView, PullRequestSummary, RateLimitState,
+    WorkflowRunSummary,
 };
 
 #[derive(Debug)]
@@ -20,7 +21,7 @@ pub enum PollerMessage {
 pub struct DashboardUpdate {
     pub actions: Option<Vec<WorkflowRunSummary>>,
     pub pulls: Option<Vec<PullRequestSummary>>,
-    pub detail: Option<Option<crate::model::WorkflowRunDetail>>,
+    pub detail: Option<Option<DetailView>>,
     pub rate_limit: Option<RateLimitState>,
     pub errors: Vec<String>,
     pub fetched_at: chrono::DateTime<chrono::Utc>,
@@ -139,35 +140,55 @@ pub fn spawn_poller(
             }
 
             if let Some(target) = detail_target {
-                let maybe_summary = update
-                    .actions
-                    .as_ref()
-                    .or(Some(&action_rows))
-                    .and_then(|runs| {
-                        runs.iter().find(|run| {
-                            run.id == target.run_id && run.repo.slug() == target.repo.slug()
-                        })
-                    })
-                    .cloned();
+                match target {
+                    DetailTarget::WorkflowRun { repo, run_id } => {
+                        let maybe_summary = update
+                            .actions
+                            .as_ref()
+                            .or(Some(&action_rows))
+                            .and_then(|runs| {
+                                runs.iter()
+                                    .find(|run| run.id == run_id && run.repo.slug() == repo.slug())
+                            })
+                            .cloned();
 
-                if let Some(summary) = maybe_summary {
-                    match client.fetch_run_detail(&summary) {
-                        Ok(result) => {
-                            update.had_success = true;
-                            rate_limits.push(result.rate_limit);
-                            update.detail = Some(Some(result.value));
-                        }
-                        Err(error) => {
-                            rate_limits.push(error.rate_limit.clone());
-                            update.errors.push(format!(
-                                "detail {}#{}: {error}",
-                                target.repo.slug(),
-                                target.run_id
-                            ));
+                        if let Some(summary) = maybe_summary {
+                            match client.fetch_run_detail(&summary) {
+                                Ok(result) => {
+                                    update.had_success = true;
+                                    rate_limits.push(result.rate_limit);
+                                    update.detail = Some(Some(DetailView::Workflow(result.value)));
+                                }
+                                Err(error) => {
+                                    rate_limits.push(error.rate_limit.clone());
+                                    update.errors.push(format!(
+                                        "detail {}#{}: {error}",
+                                        repo.slug(),
+                                        run_id
+                                    ));
+                                }
+                            }
+                        } else {
+                            update.detail = Some(None);
                         }
                     }
-                } else {
-                    update.detail = Some(None);
+                    DetailTarget::PullRequest { repo, number } => {
+                        match client.fetch_pull_request_detail(&repo, number, &viewer_login) {
+                            Ok(result) => {
+                                update.had_success = true;
+                                rate_limits.push(result.rate_limit);
+                                update.detail = Some(Some(DetailView::PullRequest(result.value)));
+                            }
+                            Err(error) => {
+                                rate_limits.push(error.rate_limit.clone());
+                                update.errors.push(format!(
+                                    "detail {}#{}: {error}",
+                                    repo.slug(),
+                                    number
+                                ));
+                            }
+                        }
+                    }
                 }
             } else {
                 update.detail = Some(None);

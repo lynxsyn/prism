@@ -10,7 +10,7 @@ Prism currently provides:
 
 - a live TUI with repo-first split panes and a stacked compact mode
 - two layouts: `split` and `compact`
-- workflow run drill-down with jobs, step progress, and failed-step labels
+- workflow and PR detail drill-down with live progress bars and failure markers
 - browser open for the selected PR or workflow run
 - `prism auth status`
 - `prism config init`
@@ -18,7 +18,6 @@ Prism currently provides:
 Prism does not currently provide:
 
 - repo-management commands such as `repos add` or `repos list`
-- local PR detail beyond the list view
 - workflow log viewing
 - GitHub write actions such as rerun, cancel, merge, or review
 - published binaries; source builds are the supported path right now
@@ -262,11 +261,11 @@ Behavior:
 - review state is reduced to `draft`, `approved`, `changes`, `review`, `requested`, or `open`
 - CI rollup is reduced to `pass`, `fail`, `pending`, `skipped`, or `-`
 
-### Workflow detail
+### Detail view
 
-Press `Enter` from an Actions list to open workflow detail inside the current pane.
+Press `Enter` from an Actions or Pull Requests list to open inline detail inside the current pane.
 
-The detail view currently shows:
+Actions detail currently shows:
 
 - repo, workflow, run title, branch, and event
 - overall run state
@@ -277,7 +276,16 @@ The detail view currently shows:
 - `indeterminate` when Prism cannot trust the step progress math
 - the first failed step label when GitHub exposes it
 
-There is no local PR detail view yet. Press `l` or `o` to open the selected PR or workflow run in the browser.
+PR detail currently shows:
+
+- repo, author, review state, and CI rollup
+- check completion counts
+- a PR-level progress bar
+- one row per reported check
+- per-check progress bars for pending, running, and completed states
+- explicit `[PASS]`, `[FAIL]`, `[WAIT]`, and `[RUN ]` badges
+
+Press `l` or `o` to open the selected PR or workflow run in the browser.
 
 ### Status bar and refresh behavior
 
@@ -308,9 +316,9 @@ Polling behavior:
 - `k` / `Up`: move up
 - `g`: jump to top
 - `G`: jump to bottom
-- `Enter`: open workflow detail for the selected Actions row
+- `Enter`: open detail for the selected Actions row or PR row
 - `l` or `o`: open the selected PR or workflow run in the browser
-- `Esc`: close help or workflow detail
+- `Esc`: close help or detail
 - `?`: toggle the help overlay
 
 There is no in-app keybinding to switch between `split` and `compact`; choose the mode when you launch Prism.

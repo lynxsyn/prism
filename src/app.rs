@@ -19,7 +19,7 @@ use crate::browser::open_target;
 use crate::config::EffectiveConfig;
 use crate::github::GitHubClient;
 use crate::model::{
-    DashboardState, DetailTarget, FocusPane, Mode, PullRequestSummary, RepoTarget,
+    DashboardState, DetailTarget, DetailView, FocusPane, Mode, PullRequestSummary, RepoTarget,
     WorkflowRunSummary,
 };
 use crate::poller::{DashboardUpdate, PollerControl, PollerMessage, apply_update, spawn_poller};
@@ -141,11 +141,12 @@ impl App {
 
     fn open_target(&self) -> Option<&str> {
         if self.detail_open() {
-            return self
-                .state
-                .detail
-                .as_ref()
-                .map(|detail| detail.summary.url.as_str());
+            return self.state.detail.as_ref().map(DetailView::url).or_else(|| {
+                match self.focused_view() {
+                    FocusPane::Actions => self.current_action().map(|run| run.url.as_str()),
+                    FocusPane::PullRequests => self.current_pr().map(|pr| pr.url.as_str()),
+                }
+            });
         }
         match self.focused_view() {
             FocusPane::Actions => self.current_action().map(|run| run.url.as_str()),
@@ -361,18 +362,34 @@ impl App {
     }
 
     fn open_detail(&mut self, poller_control: &PollerControl) {
-        let Some(run) = self.current_action().cloned() else {
-            return;
-        };
         self.detail_pane = Some(match self.config.mode {
             Mode::Compact => 0,
             Mode::Split => self.split_focus,
         });
         self.detail_scroll = 0;
-        poller_control.set_detail_target(Some(DetailTarget {
-            repo: run.repo.clone(),
-            run_id: run.id,
-        }));
+        let target = match self.focused_view() {
+            FocusPane::Actions => {
+                self.current_action()
+                    .cloned()
+                    .map(|run| DetailTarget::WorkflowRun {
+                        repo: run.repo.clone(),
+                        run_id: run.id,
+                    })
+            }
+            FocusPane::PullRequests => {
+                self.current_pr()
+                    .cloned()
+                    .map(|pr| DetailTarget::PullRequest {
+                        repo: pr.repo.clone(),
+                        number: pr.number,
+                    })
+            }
+        };
+        if let Some(target) = target {
+            poller_control.set_detail_target(Some(target));
+        } else {
+            self.detail_pane = None;
+        }
     }
 
     fn toggle_focus_or_view(&mut self) {

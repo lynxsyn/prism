@@ -139,6 +139,44 @@ impl PullRequestSummary {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct PullRequestCheckSummary {
+    pub name: String,
+    pub workflow_name: Option<String>,
+    pub status: String,
+    pub conclusion: Option<String>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub url: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PullRequestDetail {
+    pub summary: PullRequestSummary,
+    pub checks: Vec<PullRequestCheckSummary>,
+    pub total_checks: usize,
+    pub completed_checks: usize,
+    pub passing_checks: usize,
+    pub failing_checks: usize,
+    pub running_checks: usize,
+    pub pending_checks: usize,
+}
+
+#[derive(Clone, Debug)]
+pub enum DetailView {
+    Workflow(WorkflowRunDetail),
+    PullRequest(PullRequestDetail),
+}
+
+impl DetailView {
+    pub fn url(&self) -> &str {
+        match self {
+            Self::Workflow(detail) => detail.summary.url.as_str(),
+            Self::PullRequest(detail) => detail.summary.url.as_str(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum FocusPane {
     #[default]
@@ -159,7 +197,7 @@ impl FocusPane {
 pub struct DashboardState {
     pub actions: Vec<WorkflowRunSummary>,
     pub pulls: Vec<PullRequestSummary>,
-    pub detail: Option<WorkflowRunDetail>,
+    pub detail: Option<DetailView>,
     pub rate_limit: Option<RateLimitState>,
     pub errors: Vec<String>,
     pub last_refresh_at: Option<DateTime<Utc>>,
@@ -168,7 +206,7 @@ pub struct DashboardState {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct DetailTarget {
-    pub repo: RepoTarget,
-    pub run_id: u64,
+pub enum DetailTarget {
+    WorkflowRun { repo: RepoTarget, run_id: u64 },
+    PullRequest { repo: RepoTarget, number: u64 },
 }

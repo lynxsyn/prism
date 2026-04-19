@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols::border;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, Cell, Clear, Padding, Paragraph, Row, Table, TableState, Wrap,
@@ -9,7 +10,8 @@ use ratatui::{Frame, prelude::*};
 
 use crate::app::App;
 use crate::model::{
-    FocusPane, Mode, PullRequestSummary, RateLimitState, WorkflowJobSummary, WorkflowRunSummary,
+    DetailView, FocusPane, Mode, PullRequestCheckSummary, PullRequestDetail, PullRequestSummary,
+    RateLimitState, WorkflowJobSummary, WorkflowRunDetail, WorkflowRunSummary,
 };
 
 pub fn draw(frame: &mut Frame<'_>, app: &App) {
@@ -69,13 +71,20 @@ fn draw_split_pane(frame: &mut Frame<'_>, area: Rect, app: &App, pane_index: usi
     };
 
     if app.split_detail_open(pane_index) {
-        let target = app.current_split_action(pane_index);
         draw_detail_pane(
             frame,
             area,
             app,
-            target,
-            format!("{}  ·  Workflow detail", repo.slug()),
+            Some(pane_index),
+            app.split_panes[pane_index].content,
+            format!(
+                "{}  ·  {} detail",
+                repo.slug(),
+                match app.split_panes[pane_index].content {
+                    FocusPane::Actions => "Workflow",
+                    FocusPane::PullRequests => "Pull request",
+                }
+            ),
             pane_index == app.split_focus,
         );
         return;
@@ -115,30 +124,41 @@ fn draw_compact(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
         .split(area);
 
-    if app.detail_open() {
-        draw_detail_pane(
+    match (app.detail_open(), app.compact_focus) {
+        (true, FocusPane::Actions) => draw_detail_pane(
             frame,
             sections[0],
             app,
-            app.current_action(),
+            None,
+            FocusPane::Actions,
             "Workflow detail".to_string(),
-            app.compact_focus == FocusPane::Actions,
-        );
-    } else {
-        draw_actions_table(
+            true,
+        ),
+        _ => draw_actions_table(
             frame,
             sections[0],
             app,
             &mut app.actions_table_state.borrow_mut(),
-        );
+        ),
     }
 
-    draw_prs_table(
-        frame,
-        sections[1],
-        app,
-        &mut app.prs_table_state.borrow_mut(),
-    );
+    match (app.detail_open(), app.compact_focus) {
+        (true, FocusPane::PullRequests) => draw_detail_pane(
+            frame,
+            sections[1],
+            app,
+            None,
+            FocusPane::PullRequests,
+            "Pull request detail".to_string(),
+            true,
+        ),
+        _ => draw_prs_table(
+            frame,
+            sections[1],
+            app,
+            &mut app.prs_table_state.borrow_mut(),
+        ),
+    }
 }
 
 fn draw_actions_table(frame: &mut Frame<'_>, area: Rect, app: &App, state: &mut TableState) {
@@ -200,7 +220,7 @@ fn draw_actions_table(frame: &mut Frame<'_>, area: Rect, app: &App, state: &mut 
         "Actions".to_string(),
         app.compact_focus == FocusPane::Actions,
     ))
-    .column_spacing(1)
+    .column_spacing(3)
     .row_highlight_style(selected_style())
     .highlight_symbol("› ");
 
@@ -269,7 +289,7 @@ fn draw_prs_table(frame: &mut Frame<'_>, area: Rect, app: &App, state: &mut Tabl
         "Pull requests".to_string(),
         app.compact_focus == FocusPane::PullRequests,
     ))
-    .column_spacing(1)
+    .column_spacing(3)
     .row_highlight_style(selected_style())
     .highlight_symbol("› ");
 
@@ -329,7 +349,7 @@ fn draw_repo_actions_table(
     )
     .header(header)
     .block(pane_block(title.to_string(), focused))
-    .column_spacing(1)
+    .column_spacing(3)
     .row_highlight_style(selected_style())
     .highlight_symbol("› ");
 
@@ -398,7 +418,7 @@ fn draw_repo_prs_table(
     )
     .header(header)
     .block(pane_block(title.to_string(), focused))
-    .column_spacing(1)
+    .column_spacing(3)
     .row_highlight_style(selected_style())
     .highlight_symbol("› ");
 
@@ -409,15 +429,431 @@ fn draw_detail_pane(
     frame: &mut Frame<'_>,
     area: Rect,
     app: &App,
-    target: Option<&WorkflowRunSummary>,
+    pane_index: Option<usize>,
+    kind: FocusPane,
     title: String,
     focused: bool,
 ) {
-    let paragraph = Paragraph::new(detail_lines(app, target))
+    let lines = match kind {
+        FocusPane::Actions => workflow_detail_lines(
+            app,
+            pane_index
+                .and_then(|index| app.current_split_action(index))
+                .or_else(|| app.current_action()),
+        ),
+        FocusPane::PullRequests => pr_detail_lines(
+            app,
+            pane_index
+                .and_then(|index| app.current_split_pr(index))
+                .or_else(|| app.current_pr()),
+        ),
+    };
+
+    let paragraph = Paragraph::new(lines)
         .block(pane_block(title, focused))
         .scroll((app.detail_scroll as u16, 0))
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
+}
+
+fn workflow_detail_lines(app: &App, target: Option<&WorkflowRunSummary>) -> Vec<Line<'static>> {
+    let Some(target) = target else {
+        return vec![Line::from("  No workflow run selected.  ")];
+    };
+
+    let Some(detail) = matching_workflow_detail(app, target) else {
+        return vec![
+            Line::from(format!(
+                "  {}  {}",
+                target.repo.slug(),
+                truncate(&target.workflow_name, 34)
+            )),
+            Line::from(""),
+            Line::from("  Loading workflow detail...  "),
+        ];
+    };
+
+    let ascii_only = app.config.ui.ascii_only;
+    let run_style = state_style(
+        detail.summary.conclusion.as_deref(),
+        &detail.summary.status,
+        app.config.ui.no_color,
+    );
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                format!(
+                    "{}  ",
+                    status_symbol_for_state(
+                        &detail.summary.status,
+                        detail.summary.conclusion.as_deref(),
+                        ascii_only,
+                        app.spinner_index,
+                    )
+                ),
+                run_style,
+            ),
+            Span::styled(
+                truncate(&detail.summary.workflow_name, 28),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::raw(truncate(&detail.summary.title, 34)),
+        ]),
+        Line::from(""),
+        kv_line("repo", detail.summary.repo.slug(), ascii_only),
+        kv_line("branch", detail.summary.branch.clone(), ascii_only),
+        kv_line("event", detail.summary.event.clone(), ascii_only),
+        styled_kv_line(
+            "state",
+            format_run_state(&detail.summary, app),
+            ascii_only,
+            run_style,
+        ),
+        kv_line(
+            "jobs",
+            format!(
+                "{} complete  ·  {} running  ·  {} failed",
+                detail.completed_jobs, detail.running_jobs, detail.failed_jobs
+            ),
+            ascii_only,
+        ),
+        kv_line(
+            "progress",
+            progress_bar(detail.completed_jobs, detail.total_jobs, ascii_only, 18),
+            ascii_only,
+        ),
+        section_line("job tree", detail.jobs.is_empty(), ascii_only),
+    ];
+
+    for (index, job) in detail.jobs.iter().enumerate() {
+        lines.extend(detail_job_lines(
+            job,
+            index == detail.jobs.len().saturating_sub(1),
+            ascii_only,
+            app,
+        ));
+    }
+
+    lines
+}
+
+fn pr_detail_lines(app: &App, target: Option<&PullRequestSummary>) -> Vec<Line<'static>> {
+    let Some(target) = target else {
+        return vec![Line::from("  No pull request selected.  ")];
+    };
+
+    let Some(detail) = matching_pr_detail(app, target) else {
+        return vec![
+            Line::from(vec![
+                Span::styled(
+                    format!(
+                        "{}  ",
+                        status_symbol_for_pr_rollup(
+                            target.ci_rollup.as_deref(),
+                            app.config.ui.ascii_only,
+                            app.spinner_index
+                        )
+                    ),
+                    pr_rollup_style(target.ci_rollup.as_deref(), app.config.ui.no_color),
+                ),
+                Span::styled(
+                    format!("#{}", target.number),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::raw(truncate(&target.title, 42)),
+            ]),
+            Line::from(""),
+            Line::from("  Loading pull request detail...  "),
+        ];
+    };
+
+    let ascii_only = app.config.ui.ascii_only;
+    let rollup_style = pr_rollup_style(detail.summary.ci_rollup.as_deref(), app.config.ui.no_color);
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                format!(
+                    "{}  ",
+                    status_symbol_for_pr_rollup(
+                        detail.summary.ci_rollup.as_deref(),
+                        ascii_only,
+                        app.spinner_index,
+                    )
+                ),
+                rollup_style,
+            ),
+            Span::styled(
+                format!("#{}", detail.summary.number),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::raw(truncate(&detail.summary.title, 42)),
+        ]),
+        Line::from(""),
+        kv_line("repo", detail.summary.repo.slug(), ascii_only),
+        kv_line("author", detail.summary.author.clone(), ascii_only),
+        kv_line("review", review_state(&detail.summary), ascii_only),
+        styled_kv_line(
+            "checks",
+            format!(
+                "{} complete  ·  {} pass  ·  {} running  ·  {} pending  ·  {} failed",
+                detail.completed_checks,
+                detail.passing_checks,
+                detail.running_checks,
+                detail.pending_checks,
+                detail.failing_checks
+            ),
+            ascii_only,
+            rollup_style,
+        ),
+        kv_line(
+            "progress",
+            progress_bar(
+                detail.completed_checks,
+                detail.total_checks.max(1),
+                ascii_only,
+                18,
+            ),
+            ascii_only,
+        ),
+        section_line("check tree", detail.checks.is_empty(), ascii_only),
+    ];
+
+    if detail.checks.is_empty() {
+        lines.push(Line::from(format!(
+            " {} no checks reported yet",
+            nested_branch(true, ascii_only)
+        )));
+        return lines;
+    }
+
+    for (index, check) in detail.checks.iter().enumerate() {
+        lines.extend(detail_pr_check_lines(
+            check,
+            index == detail.checks.len().saturating_sub(1),
+            ascii_only,
+            app,
+        ));
+    }
+
+    lines
+}
+
+fn matching_workflow_detail<'a>(
+    app: &'a App,
+    target: &WorkflowRunSummary,
+) -> Option<&'a WorkflowRunDetail> {
+    match app.state.detail.as_ref() {
+        Some(DetailView::Workflow(detail))
+            if detail.summary.id == target.id
+                && detail.summary.repo.slug() == target.repo.slug() =>
+        {
+            Some(detail)
+        }
+        _ => None,
+    }
+}
+
+fn matching_pr_detail<'a>(
+    app: &'a App,
+    target: &PullRequestSummary,
+) -> Option<&'a PullRequestDetail> {
+    match app.state.detail.as_ref() {
+        Some(DetailView::PullRequest(detail))
+            if detail.summary.number == target.number
+                && detail.summary.repo.slug() == target.repo.slug() =>
+        {
+            Some(detail)
+        }
+        _ => None,
+    }
+}
+
+fn kv_line(label: &str, value: String, ascii_only: bool) -> Line<'static> {
+    Line::from(format!(
+        " {} {:<9} {}",
+        tree_branch(false, ascii_only),
+        label,
+        value
+    ))
+}
+
+fn styled_kv_line(label: &str, value: String, ascii_only: bool, style: Style) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(format!(" {} {:<9} ", tree_branch(false, ascii_only), label)),
+        Span::styled(value, style),
+    ])
+}
+
+fn section_line(label: &str, last: bool, ascii_only: bool) -> Line<'static> {
+    Line::from(format!(" {} {}", tree_branch(last, ascii_only), label))
+}
+
+fn detail_job_lines(
+    job: &WorkflowJobSummary,
+    last_job: bool,
+    ascii_only: bool,
+    app: &App,
+) -> Vec<Line<'static>> {
+    let job_style = state_style(
+        job.conclusion.as_deref(),
+        &job.status,
+        app.config.ui.no_color,
+    );
+    let job_progress = if job.indeterminate_progress {
+        status_meter("IN_PROGRESS", None, ascii_only, app.spinner_index, 10)
+    } else if job.total_steps > 0 {
+        progress_bar(job.completed_steps, job.total_steps, ascii_only, 10)
+    } else {
+        "-".to_string()
+    };
+
+    let mut lines = vec![Line::from(vec![
+        Span::raw(format!(" {} ", nested_branch(last_job, ascii_only))),
+        Span::styled(
+            format!(
+                "{} ",
+                status_symbol_for_state(
+                    &job.status,
+                    job.conclusion.as_deref(),
+                    ascii_only,
+                    app.spinner_index,
+                )
+            ),
+            job_style,
+        ),
+        Span::styled(
+            truncate(&job.name, 24),
+            job_style.add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(job_progress, job_style),
+        Span::raw("  "),
+        Span::styled(
+            format!(
+                "[{}]",
+                detail_state_badge(&job.status, job.conclusion.as_deref())
+            ),
+            job_style.add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            format_duration(job.started_at, job.completed_at),
+            Style::default().add_modifier(Modifier::DIM),
+        ),
+    ])];
+
+    lines.push(Line::from(vec![
+        Span::raw(format!(
+            " {} {} state        ",
+            nested_child_prefix(last_job, ascii_only),
+            tree_branch(job.failed_step_name.is_none(), ascii_only)
+        )),
+        Span::styled(format_job_state(job, app), job_style),
+    ]));
+
+    if let Some(step) = &job.failed_step_name {
+        let failed_marker = if ascii_only { "x" } else { "✕" };
+        lines.push(Line::from(vec![
+            Span::raw(format!(
+                " {} {} failed step  ",
+                nested_child_prefix(last_job, ascii_only),
+                tree_branch(true, ascii_only)
+            )),
+            Span::styled(
+                format!("{failed_marker} {step}"),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
+
+    lines
+}
+
+fn detail_pr_check_lines(
+    check: &PullRequestCheckSummary,
+    last_check: bool,
+    ascii_only: bool,
+    app: &App,
+) -> Vec<Line<'static>> {
+    let check_style = pr_check_style(check, app.config.ui.no_color);
+    let label = match &check.workflow_name {
+        Some(workflow_name) if workflow_name != &check.name => {
+            format!(
+                "{}  /  {}",
+                truncate(workflow_name, 16),
+                truncate(&check.name, 18)
+            )
+        }
+        _ => truncate(&check.name, 32),
+    };
+    let meter = status_meter(
+        &check.status,
+        check.conclusion.as_deref(),
+        ascii_only,
+        app.spinner_index,
+        10,
+    );
+
+    let mut lines = vec![Line::from(vec![
+        Span::raw(format!(" {} ", nested_branch(last_check, ascii_only))),
+        Span::styled(
+            format!(
+                "{} ",
+                status_symbol_for_state(
+                    &check.status,
+                    check.conclusion.as_deref(),
+                    ascii_only,
+                    app.spinner_index,
+                )
+            ),
+            check_style,
+        ),
+        Span::styled(label, check_style.add_modifier(Modifier::BOLD)),
+        Span::raw("  "),
+        Span::styled(meter, check_style),
+        Span::raw("  "),
+        Span::styled(
+            format!(
+                "[{}] {}",
+                detail_state_badge(&check.status, check.conclusion.as_deref()),
+                check_status_label(check, app)
+            ),
+            check_style.add_modifier(Modifier::BOLD),
+        ),
+    ])];
+
+    lines.push(Line::from(vec![
+        Span::raw(format!(
+            " {} {} timing       ",
+            nested_child_prefix(last_check, ascii_only),
+            tree_branch(check.url.is_none(), ascii_only)
+        )),
+        Span::styled(
+            format_duration(check.started_at, check.completed_at),
+            check_style,
+        ),
+    ]));
+
+    if let Some(url) = &check.url {
+        lines.push(Line::from(vec![
+            Span::raw(format!(
+                " {} {} link         ",
+                nested_child_prefix(last_check, ascii_only),
+                tree_branch(true, ascii_only)
+            )),
+            Span::raw(truncate(url, 44)),
+        ]));
+    }
+
+    lines
+}
+
+fn draw_overlay(frame: &mut Frame<'_>, area: Rect, widget: impl Widget) {
+    frame.render_widget(Clear, area);
+    frame.render_widget(widget, area);
 }
 
 fn draw_status_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -494,7 +930,7 @@ fn help_paragraph() -> Paragraph<'static> {
         Line::from(" j / ↓     move down"),
         Line::from(" k / ↑     move up"),
         Line::from(" g / G     jump to top / bottom"),
-        Line::from(" Enter     open workflow detail in the current pane"),
+        Line::from(" Enter     open selected item detail in the current pane"),
         Line::from(" l / o     open the selected item in the browser"),
         Line::from(" Esc       close help or return from detail"),
         Line::from(" ?         toggle help"),
@@ -503,133 +939,11 @@ fn help_paragraph() -> Paragraph<'static> {
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_set(border::THICK)
                 .title("Help")
-                .padding(Padding::horizontal(1)),
+                .padding(Padding::horizontal(2)),
         )
         .wrap(Wrap { trim: false })
-}
-
-fn detail_lines(app: &App, target: Option<&WorkflowRunSummary>) -> Vec<Line<'static>> {
-    let Some(target) = target else {
-        return vec![Line::from(" No workflow run selected. ")];
-    };
-
-    let Some(detail) = app.state.detail.as_ref().filter(|detail| {
-        detail.summary.id == target.id && detail.summary.repo.slug() == target.repo.slug()
-    }) else {
-        return vec![
-            Line::from(format!(
-                " {}  {}",
-                target.repo.slug(),
-                truncate(&target.workflow_name, 36)
-            )),
-            Line::from(""),
-            Line::from(" Loading workflow detail... "),
-        ];
-    };
-
-    let ascii_only = app.config.ui.ascii_only;
-    let mut lines = vec![
-        Line::from(format!(
-            " {}  {}",
-            detail.summary.workflow_name,
-            truncate(&detail.summary.title, 48)
-        )),
-        Line::from(""),
-        Line::from(format!(
-            " {} branch     {}",
-            tree_branch(false, ascii_only),
-            detail.summary.branch
-        )),
-        Line::from(format!(
-            " {} event      {}",
-            tree_branch(false, ascii_only),
-            detail.summary.event
-        )),
-        Line::from(format!(
-            " {} state      {}",
-            tree_branch(false, ascii_only),
-            format_run_state(&detail.summary, app)
-        )),
-        Line::from(format!(
-            " {} jobs       {} complete  ·  {} running  ·  {} failed",
-            tree_branch(false, ascii_only),
-            detail.completed_jobs,
-            detail.running_jobs,
-            detail.failed_jobs
-        )),
-        Line::from(format!(
-            " {} progress   {}",
-            tree_branch(false, ascii_only),
-            progress_bar(detail.completed_jobs, detail.total_jobs, ascii_only, 16)
-        )),
-        Line::from(format!(
-            " {} job tree",
-            tree_branch(detail.jobs.is_empty(), ascii_only)
-        )),
-    ];
-
-    for (index, job) in detail.jobs.iter().enumerate() {
-        lines.extend(detail_job_lines(
-            job,
-            index == detail.jobs.len().saturating_sub(1),
-            ascii_only,
-            app,
-        ));
-    }
-
-    lines
-}
-
-fn detail_job_lines(
-    job: &WorkflowJobSummary,
-    last_job: bool,
-    ascii_only: bool,
-    app: &App,
-) -> Vec<Line<'static>> {
-    let job_progress = if job.indeterminate_progress {
-        "indeterminate".to_string()
-    } else if job.total_steps > 0 {
-        progress_bar(job.completed_steps, job.total_steps, ascii_only, 10)
-    } else {
-        "-".to_string()
-    };
-
-    let mut lines = vec![Line::from(format!(
-        " {} {}  {}  {}",
-        nested_branch(last_job, ascii_only),
-        truncate(&job.name, 24),
-        job_progress,
-        format_duration(job.started_at, job.completed_at)
-    ))];
-
-    if let Some(step) = &job.failed_step_name {
-        lines.push(Line::from(Span::styled(
-            format!(
-                " {} {} failed step  {}",
-                nested_child_prefix(last_job, ascii_only),
-                tree_branch(true, ascii_only),
-                step
-            ),
-            Style::default().fg(Color::Red),
-        )));
-    }
-
-    if job.status != "completed" {
-        lines.push(Line::from(format!(
-            " {} {} state        {}",
-            nested_child_prefix(last_job, ascii_only),
-            tree_branch(true, ascii_only),
-            format_job_state(job, app)
-        )));
-    }
-
-    lines
-}
-
-fn draw_overlay(frame: &mut Frame<'_>, area: Rect, widget: impl Widget) {
-    frame.render_widget(Clear, area);
-    frame.render_widget(widget, area);
 }
 
 fn pane_block(title: String, focused: bool) -> Block<'static> {
@@ -639,14 +953,17 @@ fn pane_block(title: String, focused: bool) -> Block<'static> {
         title
     };
     let style = if focused {
-        Style::default().fg(Color::Cyan)
-    } else {
         Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().add_modifier(Modifier::BOLD)
     };
     Block::default()
         .borders(Borders::ALL)
+        .border_set(border::THICK)
         .border_style(style)
-        .padding(Padding::horizontal(1))
+        .padding(Padding::horizontal(2))
         .title(title)
 }
 
@@ -669,13 +986,169 @@ fn state_style(conclusion: Option<&str>, status: &str, no_color: bool) -> Style 
         return Style::default();
     }
     match (status, conclusion) {
-        ("completed", Some("success")) => Style::default().fg(Color::Green),
-        ("completed", Some("skipped")) => Style::default().fg(Color::DarkGray),
-        ("completed", Some("failure" | "timed_out" | "cancelled")) => {
-            Style::default().fg(Color::Red)
+        ("completed" | "COMPLETED", Some("success" | "SUCCESS")) => {
+            Style::default().fg(Color::Green)
         }
-        ("completed", _) => Style::default().fg(Color::Yellow),
+        ("completed" | "COMPLETED", Some("skipped" | "SKIPPED" | "NEUTRAL")) => {
+            Style::default().fg(Color::DarkGray)
+        }
+        (
+            "completed" | "COMPLETED",
+            Some(
+                "failure" | "FAILURE" | "ERROR" | "timed_out" | "TIMED_OUT" | "cancelled"
+                | "CANCELLED" | "ACTION_REQUIRED",
+            ),
+        ) => Style::default().fg(Color::Red),
+        ("completed" | "COMPLETED", _) => Style::default().fg(Color::Yellow),
         _ => Style::default().fg(Color::Blue),
+    }
+}
+
+fn pr_rollup_style(rollup: Option<&str>, no_color: bool) -> Style {
+    if no_color {
+        return Style::default();
+    }
+    match rollup {
+        Some("SUCCESS") => Style::default().fg(Color::Green),
+        Some("FAILURE" | "ERROR") => Style::default().fg(Color::Red),
+        Some("PENDING" | "EXPECTED") => Style::default().fg(Color::Blue),
+        Some("SKIPPED") => Style::default().fg(Color::DarkGray),
+        _ => Style::default().fg(Color::Yellow),
+    }
+}
+
+fn pr_check_style(check: &PullRequestCheckSummary, no_color: bool) -> Style {
+    state_style(check.conclusion.as_deref(), &check.status, no_color)
+}
+
+fn status_symbol_for_state(
+    status: &str,
+    conclusion: Option<&str>,
+    ascii_only: bool,
+    spinner_index: usize,
+) -> String {
+    match (status, conclusion) {
+        ("completed" | "COMPLETED", Some("success" | "SUCCESS")) => {
+            if ascii_only {
+                "+".to_string()
+            } else {
+                "✓".to_string()
+            }
+        }
+        ("completed" | "COMPLETED", Some("skipped" | "SKIPPED" | "NEUTRAL")) => "-".to_string(),
+        (
+            "completed" | "COMPLETED",
+            Some(
+                "failure" | "FAILURE" | "ERROR" | "cancelled" | "CANCELLED" | "timed_out"
+                | "TIMED_OUT" | "ACTION_REQUIRED",
+            ),
+        ) => {
+            if ascii_only {
+                "x".to_string()
+            } else {
+                "✕".to_string()
+            }
+        }
+        ("queued" | "QUEUED" | "PENDING" | "EXPECTED" | "WAITING" | "REQUESTED", _) => {
+            if ascii_only {
+                ".".to_string()
+            } else {
+                "·".to_string()
+            }
+        }
+        _ => spinner_frame(spinner_index, ascii_only),
+    }
+}
+
+fn status_symbol_for_pr_rollup(
+    rollup: Option<&str>,
+    ascii_only: bool,
+    spinner_index: usize,
+) -> String {
+    match rollup {
+        Some("SUCCESS") => {
+            if ascii_only {
+                "+".to_string()
+            } else {
+                "✓".to_string()
+            }
+        }
+        Some("FAILURE" | "ERROR") => {
+            if ascii_only {
+                "x".to_string()
+            } else {
+                "✕".to_string()
+            }
+        }
+        Some("PENDING" | "EXPECTED") => spinner_frame(spinner_index, ascii_only),
+        Some("SKIPPED") => "-".to_string(),
+        _ => {
+            if ascii_only {
+                "?".to_string()
+            } else {
+                "·".to_string()
+            }
+        }
+    }
+}
+
+fn status_meter(
+    status: &str,
+    conclusion: Option<&str>,
+    ascii_only: bool,
+    spinner_index: usize,
+    width: usize,
+) -> String {
+    let filled = match status {
+        "completed" | "COMPLETED" => width,
+        "IN_PROGRESS" | "RUNNING" | "in_progress" => {
+            let min_fill = (width / 3).max(1);
+            min_fill + (spinner_index % (width.saturating_sub(min_fill).max(1)))
+        }
+        "queued" | "QUEUED" | "PENDING" | "EXPECTED" | "WAITING" | "REQUESTED" => 0,
+        _ if conclusion.is_some() => width,
+        _ => (width / 2).max(1),
+    };
+    let fill = filled.min(width);
+    let full = if ascii_only { '#' } else { '█' };
+    let empty = if ascii_only { '-' } else { '░' };
+    format!(
+        "[{}{}]",
+        full.to_string().repeat(fill),
+        empty.to_string().repeat(width.saturating_sub(fill))
+    )
+}
+
+fn check_status_label(check: &PullRequestCheckSummary, app: &App) -> String {
+    match (check.status.as_str(), check.conclusion.as_deref()) {
+        ("COMPLETED", Some("SUCCESS")) => "pass".to_string(),
+        ("COMPLETED", Some("SKIPPED" | "NEUTRAL")) => "skipped".to_string(),
+        ("COMPLETED", Some("FAILURE" | "ERROR")) => "fail".to_string(),
+        ("COMPLETED", Some("CANCELLED" | "TIMED_OUT" | "ACTION_REQUIRED")) => "stopped".to_string(),
+        ("IN_PROGRESS" | "RUNNING", _) => format!(
+            "{} running",
+            spinner_frame(app.spinner_index, app.config.ui.ascii_only)
+        ),
+        ("QUEUED" | "PENDING" | "EXPECTED" | "WAITING" | "REQUESTED", _) => "pending".to_string(),
+        _ => check.status.to_ascii_lowercase(),
+    }
+}
+
+fn detail_state_badge(status: &str, conclusion: Option<&str>) -> &'static str {
+    match (status, conclusion) {
+        ("completed" | "COMPLETED", Some("success" | "SUCCESS")) => "PASS",
+        ("completed" | "COMPLETED", Some("skipped" | "SKIPPED" | "NEUTRAL")) => "SKIP",
+        (
+            "completed" | "COMPLETED",
+            Some(
+                "failure" | "FAILURE" | "ERROR" | "cancelled" | "CANCELLED" | "timed_out"
+                | "TIMED_OUT" | "ACTION_REQUIRED",
+            ),
+        ) => "FAIL",
+        ("queued" | "QUEUED" | "PENDING" | "EXPECTED" | "WAITING" | "REQUESTED", _) => "WAIT",
+        ("IN_PROGRESS" | "RUNNING" | "in_progress", _) => "RUN ",
+        ("completed" | "COMPLETED", _) => "DONE",
+        _ => "INFO",
     }
 }
 
@@ -700,14 +1173,15 @@ fn format_run_state(run: &WorkflowRunSummary, app: &App) -> String {
 fn format_job_state(job: &WorkflowJobSummary, app: &App) -> String {
     if job.status == "completed" {
         match job.conclusion.as_deref() {
-            Some("success") => "✓ success".to_string(),
-            Some("failure") => "✕ failure".to_string(),
-            Some("cancelled") => "✕ cancelled".to_string(),
-            _ => "- done".to_string(),
+            Some("success") => "[PASS] success".to_string(),
+            Some("failure") => "[FAIL] failure".to_string(),
+            Some("cancelled") => "[FAIL] cancelled".to_string(),
+            Some("timed_out") => "[FAIL] timeout".to_string(),
+            _ => "[DONE] complete".to_string(),
         }
     } else {
         format!(
-            "{} running",
+            "[RUN ] {} running",
             spinner_frame(app.spinner_index, app.config.ui.ascii_only)
         )
     }

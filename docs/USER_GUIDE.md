@@ -225,11 +225,11 @@ Use this pane to answer:
 - which PRs are blocked by checks
 - which PRs changed recently
 
-## 8. Open Workflow Detail
+## 8. Open Inline Detail
 
-Press `Enter` while focused on an Actions list.
+Press `Enter` while focused on an Actions list or Pull Requests list.
 
-Workflow detail currently shows:
+Actions detail currently shows:
 
 - repo, workflow name, run title, branch, and event
 - run state
@@ -250,7 +250,16 @@ Workflow detail is intentionally bounded:
 
 Workflow detail opens inline in the current pane instead of as a floating window.
 
-There is no local PR detail screen yet. Use `l` or `o` to open the selected PR in the browser.
+PR detail currently shows:
+
+- repo, author, review state, and CI rollup
+- check completion counts
+- a PR-level progress bar
+- one row per check
+- a progress bar for each pending, running, or completed check
+- explicit `[PASS]`, `[FAIL]`, `[WAIT]`, and `[RUN ]` badges
+
+Use `l` or `o` to open the selected PR or workflow run in the browser.
 
 ## 9. Use The Keyboard Efficiently
 
@@ -264,7 +273,7 @@ Core controls:
 - `k` / `Up`: move up
 - `g`: jump to top
 - `G`: jump to bottom
-- `Enter`: open workflow detail for the selected workflow run
+- `Enter`: open detail for the selected workflow run or PR
 - `l` or `o`: open the selected PR or workflow run in the browser
 - `Esc`: close detail or help
 - `?`: toggle help
@@ -361,7 +370,6 @@ Prism today is a watch surface, not a full terminal GitHub client.
 Current non-features:
 
 - repo add/list management commands
-- local PR detail
 - log viewing
 - search or filter prompt
 - GitHub mutations
