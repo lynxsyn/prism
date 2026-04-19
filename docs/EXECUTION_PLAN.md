@@ -46,7 +46,6 @@ This plan is the implementation sequence, not the product spec. The spec remains
 - add dependencies:
   - `ratatui`
   - `crossterm`
-  - `tokio`
   - `clap`
   - `reqwest`
   - `serde`
@@ -54,7 +53,8 @@ This plan is the implementation sequence, not the product spec. The spec remains
   - `toml`
   - `directories`
   - `anyhow` or `thiserror`
-  - `tracing` and `tracing-subscriber`
+  - `ctrlc`
+  - optional `tracing` and `tracing-subscriber` if structured logging is added
 - create module layout from the spec
 - add `Makefile` or `justfile` for common commands
 - add CI workflow for:

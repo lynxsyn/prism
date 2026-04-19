@@ -1,155 +1,174 @@
 # Prism
 
-Prism is a terminal-native GitHub dashboard for watching pull requests and GitHub Actions across a small, explicit set of repositories.
+Prism is a keyboard-driven terminal dashboard for watching GitHub Actions and pull requests across an explicit list of repositories.
 
-It is being built as a pure Rust CLI/TUI for operators who want live repo awareness without living in browser tabs.
+This README documents the current shipped CLI and TUI behavior in `prism 0.1.0`. Planning docs in [`docs/SPEC.md`](./docs/SPEC.md) and [`docs/EXECUTION_PLAN.md`](./docs/EXECUTION_PLAN.md) describe the target direction; they are not a promise that every planned command or behavior exists today.
 
-## Status
+## What Ships Today
 
-Prism is in active implementation.
+Prism currently provides:
 
-Current repo state:
+- a live TUI with an Actions pane and a Pull Requests pane
+- two layouts: `split` and `compact`
+- workflow run drill-down with jobs, step progress, and failed-step labels
+- browser open for the selected PR or workflow run
+- `prism auth status`
+- `prism config init`
 
-- product spec and converged execution plan are checked in
-- user-facing CLI contract is defined
-- v1 distribution target is a standalone binary
-- `gh` extension packaging is explicitly deferred out of v1
+Prism does not currently provide:
 
-This README documents the intended v1 behavior and onboarding contract so the app and docs converge on the same surface.
+- repo-management commands such as `repos add` or `repos list`
+- local PR detail beyond the list view
+- workflow log viewing
+- GitHub write actions such as rerun, cancel, merge, or review
+- published binaries; source builds are the supported path right now
 
-## What Prism Is For
+## Install From Source
 
-Prism exists to solve two recurring GitHub workflows:
+```bash
+git clone https://github.com/lynxsyn/prism
+cd prism
+cargo build --release
+./target/release/prism --help
+```
 
-1. PR triage across selected repositories
-2. live CI monitoring as workflow runs queue, start, progress, fail, and complete
+For day-to-day local use during development, `cargo run -- ...` is fine:
 
-It sits between one-shot `gh` commands and a browser session:
+```bash
+cargo run -- --help
+```
 
-- `gh` is still useful for ad hoc queries and auth bootstrap
-- Prism owns the always-on dashboard view
+## Quick Start
 
-## v1 Scope
+1. Create a starter config:
 
-Prism v1 is intentionally narrow.
+   ```bash
+   cargo run -- config init
+   ```
 
-Included:
+2. Edit the generated config file and replace the placeholder repos.
 
-- Rust TUI built with `ratatui` + `crossterm`
-- standalone binary first
-- multi-repo monitoring from config or CLI args
-- compact and split layouts
-- pull request overview with review and CI rollups
-- live GitHub Actions list with adaptive polling
-- in-app run drill-down into jobs and step progress
-- browser open for selected PRs and workflow runs
-- optional `gh auth token` fallback for authentication
+   Default config paths:
 
-Explicitly out of scope for v1:
+   - macOS: `~/Library/Application Support/app.lynxsyn.prism/config.toml`
+   - Linux: `$XDG_CONFIG_HOME/prism/config.toml` or `~/.config/prism/config.toml`
 
-- `gh` extension packaging
-- browser UI or web server
-- log viewer
-- inline GitHub mutations
-- issue tracking
-- activity/event feed pane
-- Windows support
+3. Provide a token:
 
-## Design Principles
+   ```bash
+   export PRISM_TOKEN=ghp_your_token_here
+   ```
 
-- clean, compact, terminal-first layout
-- no emoji
-- minimal glyphs with ASCII fallbacks
-- theme inherits from the terminal instead of imposing a custom palette
-- progress bars and state markers should feel closer to a status bar than a novelty TUI
-- polling behavior must be rate-limit aware and stable in long-running sessions
+   Or authenticate `gh` and let Prism fall back to `gh auth token`.
 
-## Planned Feature Set
+4. Start Prism:
 
-### Pull requests
+   ```bash
+   cargo run --
+   ```
 
-- open PRs only in v1
-- repo, number, title, author, review state, CI rollup, updated time
-- requested-review rows called out clearly
-- open selected PR in browser
+   Or skip config-file repos for a one-off session:
 
-### Actions
+   ```bash
+   cargo run -- openai/codex rust-lang/cargo
+   ```
 
-- recent workflow runs per repo
-- queued, running, passed, failed, cancelled, skipped states
-- live elapsed timers for in-progress runs
-- local refresh countdown and stale markers
-- open selected run in browser
+## CLI Reference
 
-### Actions drill-down
+Current top-level usage:
 
-- focused run metadata: workflow, branch, event, run number, age, overall state
-- jobs grouped by failure/running/pending/completed
-- compact progress bars for run-level job completion and job-level step completion
-- most recent failed step label where GitHub exposes it
-- bounded detail polling only while the detail view is open
+```text
+prism [OPTIONS] [OWNER/REPO]... [COMMAND]
+prism auth status
+prism config init [--force]
+```
 
-Prism v1 is not a replacement for GitHub logs. Drill-down answers "what is happening" and "what failed", not "show every log line".
+Available subcommands:
 
-## Install
+- `auth status`
+- `config init`
 
-### Current release status
+Global flags:
 
-Public binaries are not published yet.
+- `-c, --config <PATH>`: use a specific config file
+- `-r, --repo <OWNER/REPO>`: add a repo target; repeatable
+- `[OWNER/REPO]...`: positional repo targets; combined with `--repo`
+- `-i, --interval <SECONDS>`: base refresh interval, default `10`, clamped to a minimum of `5`
+- `-m, --mode <compact|split>`: layout mode, default `split`
+- `--host <HOST>`: GitHub host, default `github.com`
+- `--actions-limit <N>`: workflow runs per repo, default `10`
+- `--prs-limit <N>`: open PRs per repo, default `30`
+- `--open-command <CMD>`: override how URLs are opened
+- `--no-color`: disable color styling
+- `--ascii-only`: replace Unicode spinners and bars with ASCII-safe output
 
-The intended v1 install paths are:
+Repo target formats:
 
-1. GitHub release download
-2. Homebrew tap
-3. `cargo install --git https://github.com/lynxsyn/prism`
+- `owner/repo`
+- `host/owner/repo`
 
-The app is being built as a standalone binary first. A `gh prism` extension wrapper may be added later if it is trivially thin, but that is not part of the first release target.
+Current host rule:
 
-### Platform target
+- Prism supports one effective GitHub host per session; mixed-host watch lists are rejected
 
-- macOS first
-- Linux shortly after
-- GitHub.com first, GitHub Enterprise via explicit host config
+Repo precedence is important:
+
+- if you pass any repos on the CLI, Prism ignores `repos = [...]` from the config file for that run
+- `--repo` values and positional repo values are merged together
+- if a repo target is `owner/repo` and the effective host is not `github.com`, Prism rewrites that repo to the configured host
+
+Examples:
+
+```bash
+# Start from config-file repos
+prism
+
+# One-off watch list
+prism openai/codex rust-lang/cargo
+
+# Mixed explicit repo flags
+prism -r openai/codex rust-lang/cargo
+
+# Compact mode for narrow terminals
+prism --mode compact openai/codex
+
+# GitHub Enterprise host, using host-wide default
+prism --host github.example.com platform/api
+
+# GitHub Enterprise host, per-repo target
+prism github.example.com/platform/api
+
+# Validate which auth source Prism will use
+prism auth status
+```
 
 ## Authentication
 
 Prism resolves auth in this order:
 
-1. `PRISM_TOKEN`
-2. token reference from config
-3. `gh auth token` fallback
+1. the environment variable named by `auth.token_env` in config, default `PRISM_TOKEN`
+2. `auth.token` from the config file
+3. `gh auth token --hostname <host>` if `auth.use_gh_fallback = true`
 
-Recommended token shape:
+`prism auth status` shows the effective host, the winning auth source, and the masked token suffix:
 
-- fine-grained PAT
-- read-only where possible
-- scoped only to the repos you want Prism to watch
+```text
+host: github.com
+source: gh
+token: ****rl04
+```
 
-Expected permissions:
+If Prism cannot resolve a token, it exits with an actionable startup error instead of launching the TUI.
+
+Recommended token permissions:
 
 - repository metadata: read
 - pull requests: read
 - actions: read
 
-Why the `gh` fallback exists:
-
-- Prism stays usable if you already rely on GitHub CLI auth
-- Prism still remains a standalone tool and does not shell out to `gh` for normal polling
-
 ## Configuration
 
-Default config path:
-
-- macOS/Linux: `~/.config/prism/config.toml`
-
-Config precedence:
-
-1. CLI args
-2. environment variables
-3. config file
-4. defaults
-
-Example config:
+`prism config init` writes this starter config:
 
 ```toml
 host = "github.com"
@@ -161,7 +180,6 @@ prs_limit = 30
 repos = [
   "owner/repo-a",
   "owner/repo-b",
-  "owner/repo-c",
 ]
 
 [auth]
@@ -174,261 +192,172 @@ open_command = ""
 ascii_only = false
 ```
 
-Supported environment variables:
+Current config behavior:
 
-- `PRISM_TOKEN`
+- `host`: defaults to `github.com`
+- `interval`: default `10`; values below `5` are raised to `5`
+- `mode`: `split` or `compact`
+- `actions_limit`: runs fetched per repo
+- `prs_limit`: open PRs fetched per repo
+- `repos`: explicit watch list; Prism never auto-discovers repos
+- `[auth].token`: inline token, if you want config-file auth instead of env or `gh`
+- `[auth].token_env`: env var Prism should read first
+- `[auth].use_gh_fallback`: defaults to `true`
+- `[ui].open_command`: custom browser command; Prism substitutes `{url}` if present, otherwise appends the URL
+- `[ui].ascii_only`: ASCII-safe spinners and progress bars
+- `[ui].theme`: currently written by `config init`, but the shipped TUI does not apply a configurable theme yet
+
+Only two non-auth env vars are parsed directly today:
+
 - `PRISM_HOST`
 - `PRISM_INTERVAL`
-- `BROWSER`
 
-Configuration intent:
+CLI flags override env and config values. Config overrides built-in defaults.
 
-- keep repo selection explicit
-- avoid org-wide auto-discovery in v1
-- keep rate-limit math predictable
+## Using The TUI
 
-## Usage
+### Layout modes
 
-Target CLI surface:
+- `split`: side-by-side Actions and Pull Requests panes; Prism requires at least `96` columns for this mode
+- `compact`: stacked panes; Prism requires at least `52` columns for this mode
 
-```text
-prism [repo...] [flags]
-prism auth status
-prism config init
-prism repos add owner/repo
-prism repos list
-```
+If the terminal is narrower than the current mode supports, Prism shows a resize warning instead of trying to squeeze the tables into unreadable columns.
 
-Common examples:
+### Actions pane
+
+The Actions pane shows recent workflow runs across the configured repos.
+
+Current columns:
+
+- `Repo`
+- `Workflow`
+- `Branch`
+- `State`
+- `Age`
+- `Dur`
+
+Behavior:
+
+- newest runs sort first
+- running rows animate locally between polls
+- duration uses `run_started_at` when GitHub provides it
+- status uses success/failure/queued/running reductions
+
+### Pull Requests pane
+
+The Pull Requests pane shows open PRs only.
+
+Current columns:
+
+- `Repo`
+- `#`
+- `Title`
+- `Author`
+- `Review`
+- `CI`
+- `Updated`
+
+Behavior:
+
+- PRs sort by most recently updated
+- direct review requests for the authenticated viewer are highlighted
+- review state is reduced to `draft`, `approved`, `changes`, `review`, `requested`, or `open`
+- CI rollup is reduced to `pass`, `fail`, `pending`, `skipped`, or `-`
+
+### Workflow detail
+
+Press `l` from the Actions pane to open workflow detail for the selected run.
+
+The detail view currently shows:
+
+- repo, workflow, run title, branch, and event
+- overall run state
+- job completion counts
+- a run-level progress bar
+- one row per job
+- job-level progress bars when the step list is reliable enough
+- `indeterminate` when Prism cannot trust the step progress math
+- the first failed step label when GitHub exposes it
+
+There is no local PR detail view yet. Pressing `l` is for Actions drill-down only.
+
+### Status bar and refresh behavior
+
+The status bar shows:
+
+- mode
+- last successful refresh time
+- next refresh countdown
+- lowest remaining GitHub rate limit seen across the active requests
+- host
+- `stale` when the last refresh had one or more fetch errors
+- `l:detail` or `esc:close`
+
+Polling behavior:
+
+- base interval comes from `--interval` or config, default `10`
+- if the remaining rate limit drops to `500` or below, Prism slows to at least `20s`
+- if the remaining rate limit drops to `100` or below, Prism slows to at least `60s`
+- failed refreshes keep the last good data on screen and mark the session stale
+
+## Keyboard Controls
+
+- `q`: quit
+- `r`: force refresh now
+- `Tab`: switch focus between Actions and Pull Requests
+- `j` / `Down`: move down
+- `k` / `Up`: move up
+- `g`: jump to top
+- `G`: jump to bottom
+- `l`: open workflow detail for the selected Actions row
+- `o` or `Enter`: open the selected PR or workflow run in the browser
+- `Esc`: close help or workflow detail
+- `?`: toggle the help overlay
+
+There is no in-app keybinding to switch between `split` and `compact`; choose the mode when you launch Prism.
+
+## Browser Opening
+
+By default Prism asks the OS to open the selected URL.
+
+If you need a specific launcher, use `--open-command` or `[ui].open_command`, for example:
 
 ```bash
-# Watch repos from config
-prism
-
-# Watch explicit repos for this session
-prism lynxsyn/prism owner/service-a owner/service-b
-
-# Faster refresh during active triage
-prism --interval 5
-
-# Narrow pane mode
-prism --mode compact
-
-# Override config path
-prism --config ~/.config/prism/work.toml
-
-# Check which auth source Prism will use
-prism auth status
+prism --open-command 'open {url}'
+prism --open-command 'xdg-open {url}'
+prism --open-command 'firefox --new-tab'
 ```
 
-Core flags:
+If `{url}` is missing, Prism appends the URL to the end of the command.
 
-- `-r, --repo <OWNER/REPO>` repeatable repo target
-- `-f, --config <PATH>` config file path
-- `-i, --interval <SECONDS>` polling interval, default `10`
-- `-m, --mode <compact|split>` default `split`
-- `--host <HOST>` GitHub hostname, default `github.com`
-- `--actions-limit <N>` workflow runs per repo, default `10`
-- `--prs-limit <N>` open PR row limit, default `30`
-- `--open-command <CMD>` override browser launcher
-- `--no-color` disable color output
+## Troubleshooting
 
-## Layout Modes
-
-### `compact`
-
-Use this when Prism is running in a narrow iTerm split or side pane.
-
-Characteristics:
-
-- one stacked column
-- lower information density
-- optimized for roughly `40-70` columns
-- still preserves selection, refresh state, and open/drill-down actions
-
-### `split`
-
-This is the default operator view.
-
-Characteristics:
-
-- left pane for Actions
-- right pane for PRs
-- optimized for `80+` columns
-- status bar always visible
-
-If the terminal is too narrow for the selected mode, Prism should show a clear resize warning instead of rendering a broken layout.
-
-## Keybindings
-
-Mandatory v1 keybindings:
-
-| Key | Action |
-| --- | --- |
-| `q` | Quit Prism |
-| `r` | Force refresh immediately |
-| `Tab` | Switch focus between panes |
-| `j` / `Down` | Move selection down |
-| `k` / `Up` | Move selection up |
-| `g` | Jump to top of focused pane |
-| `G` | Jump to bottom of focused pane |
-| `o` / `Enter` | Open selected PR or run in browser |
-| `l` | Open local detail/drill-down for selected item |
-| `Esc` | Close detail or help overlay |
-| `?` | Open help overlay |
-
-Potential post-v1 additions:
-
-- `/` for filtering
-- `1` and `2` for mode switching
-
-## Status Indicators
-
-Prism avoids regular emoji. Status should read cleanly in a coding terminal and degrade to ASCII when needed.
-
-Target semantic states:
-
-| State | Meaning | Visual intent |
-| --- | --- | --- |
-| queued | waiting to start | subtle pending marker |
-| running | actively progressing | spinner or pulse plus elapsed time |
-| success | completed successfully | check-style marker |
-| failure | completed with failure | cross-style marker |
-| cancelled | stopped intentionally or by policy | stop marker |
-| skipped | intentionally not run | neutral dash marker |
-| stale | cached data shown after refresh failure | dim or warned state |
-
-Progress representation rules:
-
-- use compact text bars, not decorative blocks unless width and glyph support are reliable
-- only show determinate progress when GitHub data is trustworthy
-- if progress cannot be inferred cleanly, show running state without fake percentages
-
-Typical shapes Prism should support:
+No repos configured:
 
 ```text
-Jobs   [3/8]
-Steps  [#####.....] 5/10
-State  running  07:42
+Error: no repositories configured; pass owner/repo arguments or create /path/to/config.toml
 ```
 
-Exact glyph choice may vary with terminal capability and `ascii_only` settings, but the UI contract is the same: compact, legible, and theme-aware.
+Fix it by either:
 
-## Actions Drill-Down
+- adding repos to the config file
+- passing repos on the CLI for that session
 
-Drill-down is one of Prism's main differentiators.
+Auth problems:
 
-From the Actions pane, selecting a workflow run and opening details should reveal:
+- run `prism auth status`
+- verify the resolved `host`
+- verify the token source
+- if you depend on `gh` fallback, make sure `gh auth token --hostname <host>` works
 
-- workflow name
-- repo and branch
-- event type
-- run number
-- current run state
-- elapsed duration
-- run-level job completion progress
-- per-job state
-- per-job step progress when GitHub exposes it
-- most recent failed step label when available
+Terminal too narrow:
 
-Important v1 boundaries:
-
-- no log streaming
-- no expandable per-step UI tree
-- no rerun or cancel controls
-- no second app mode; detail opens as an overlay or detail pane inside the same event loop
-
-Polling behavior in detail view:
-
-- run summaries continue polling on the main cadence
-- selected run detail polls separately at a bounded rate only while detail is open
-- closing detail stops detail polling
-
-## Polling, Caching, and Rate Limits
-
-Prism treats API budget as part of the product, not a hidden implementation detail.
-
-Rules:
-
-- use REST for Actions and GraphQL for PR summary data
-- use conditional requests and cached snapshots where possible
-- keep local timers for running jobs instead of polling every second
-- preserve the last good snapshot if a refresh fails
-- mark panes stale instead of clearing the screen
-
-Adaptive polling tiers:
-
-- normal: user interval, default `10s`
-- low quota: slow to at least `20s`
-- very low quota: slow to at least `60s`
-- rate-limited: pause until reset or `Retry-After`, then resume with backoff
-
-Prism's initial planning target is a small explicit set of repos, roughly `5-10` repos at a `10s` cadence. Wider fleets should expect slower practical polling or explicit warnings.
-
-## Limitations
-
-Known v1 constraints:
-
-- no activity feed pane
-- no issue dashboard
-- no inline diff review
-- no log viewer
-- no write operations back to GitHub
-- no Windows support
-- repo list is explicit; v1 is not an org crawler
-- `gh` integration is limited to auth fallback, not the live data plane
-
-If the PR GraphQL mapping proves uglier than expected during implementation, that work remains gated by the spike documented in the execution plan. The Actions path is the proving ground for live-state behavior first.
-
-## Development Workflow
-
-Prism is being built in thin vertical slices.
-
-Recommended execution order:
-
-1. bootstrap the Rust workspace
-2. build the TUI shell with mock data
-3. wire config and auth
-4. ship the live Actions list
-5. ship Actions drill-down
-6. prove the PR GraphQL query shape
-7. ship the live PR pane
-8. harden reliability before visual polish
-9. package standalone releases
-
-Contributor expectations:
-
-- keep Prism a standalone binary first
-- do not turn Actions drill-down into a log viewer
-- treat rate-limit handling and stale-state behavior as core product work
-- keep selection anchored to entity identity across refreshes
-- validate narrow terminal widths early
-
-Planned Rust stack:
-
-- `ratatui`
-- `crossterm`
-- `tokio`
-- `clap`
-- `reqwest`
-- `serde`
-- `toml`
-
-Once the scaffold lands, the normal contributor loop should be:
-
-```bash
-cargo fmt
-cargo clippy -- -D warnings
-cargo test
-cargo run -- --help
-```
+- switch to `--mode compact`
+- widen the terminal
 
 ## Docs Map
 
-- [docs/SPEC.md](docs/SPEC.md): product specification and behavior contract
-- [docs/EXECUTION_PLAN.md](docs/EXECUTION_PLAN.md): phased build plan
-- [docs/USER_GUIDE.md](docs/USER_GUIDE.md): operator-focused usage and UI behavior
-- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md): contributor workflow and implementation guardrails
-- [docs/ADVERSARIAL_REVIEW.md](docs/ADVERSARIAL_REVIEW.md): first review round
-- [docs/ADVERSARIAL_REVIEW_ROUND2.md](docs/ADVERSARIAL_REVIEW_ROUND2.md): second review round
-- [docs/ADVERSARIAL_REVIEW_ROUND3.md](docs/ADVERSARIAL_REVIEW_ROUND3.md): convergence review
+- [`docs/USER_GUIDE.md`](./docs/USER_GUIDE.md): current operator workflow and usage
+- [`docs/SPEC.md`](./docs/SPEC.md): target product behavior and current CLI contract notes
+- [`docs/EXECUTION_PLAN.md`](./docs/EXECUTION_PLAN.md): implementation sequencing
+- [`docs/DEVELOPMENT.md`](./docs/DEVELOPMENT.md): contributor guardrails

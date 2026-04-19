@@ -7,6 +7,8 @@ Related docs:
 - [DEVELOPMENT.md](./DEVELOPMENT.md) for contributor guardrails
 - [EXECUTION_PLAN.md](./EXECUTION_PLAN.md) for implementation sequencing
 
+This document is the product target. For current shipped usage, trust the README and user guide first. CLI and config details below are kept aligned with the current binary where that surface already exists.
+
 ## 1. Overview
 
 Prism is a fast, keyboard-driven terminal dashboard for monitoring GitHub pull requests and GitHub Actions across one or more repositories.
@@ -114,7 +116,7 @@ Prism v1 ships with two layout modes:
 - single column
 - repo sections stacked vertically
 - lowest information density that still preserves utility
-- intended for narrow panes around 40-70 columns
+- intended for narrow panes around 52+ columns
 
 ### `split`
 
@@ -234,28 +236,32 @@ Bottom status bar always shows:
 
 ## 8. CLI Interface
 
-Proposed top-level usage:
+Current shipped top-level usage:
 
 ```text
-prism [repo...] [flags]
+prism [OPTIONS] [OWNER/REPO]... [COMMAND]
 prism auth status
-prism config init
-prism repos add owner/repo
-prism repos list
+prism config init [--force]
 ```
 
 ### 8.1 Main flags
 
-- `-r, --repo <OWNER/REPO>` repeatable
-- `-f, --config <PATH>`
-- `-i, --interval <SECONDS>` default `10`
+- `-c, --config <PATH>`
+- `-r, --repo <OWNER/REPO>` repeatable; merged with positional repos
+- `[OWNER/REPO]...` positional repo targets
+- `-i, --interval <SECONDS>` default `10`, clamped to a minimum of `5`
 - `-m, --mode <compact|split>` default `split`
 - `--host <HOST>` default `github.com`
 - `--actions-limit <N>` default `10`
 - `--prs-limit <N>` default `30`
 - `--open-command <CMD>`
-- `--log-level <error|warn|info|debug|trace>`
+- `--ascii-only`
 - `--no-color`
+
+Commands shipped today:
+
+- `auth status`
+- `config init [--force]`
 
 ### 8.2 Config precedence
 
@@ -266,18 +272,18 @@ prism repos list
 
 Environment variables:
 
-- `PRISM_TOKEN`
 - `PRISM_HOST`
 - `PRISM_INTERVAL`
-- `BROWSER`
+
+Auth env is configured separately through `[auth].token_env`, which defaults to `PRISM_TOKEN`.
 
 ## 9. Authentication
 
-Prism should support three auth sources in this order:
+Prism currently supports three auth sources in this order:
 
-1. `PRISM_TOKEN`
-2. config file token reference or secret-store lookup
-3. `gh auth token` fallback
+1. the env var named by `[auth].token_env`, default `PRISM_TOKEN`
+2. `[auth].token` in the config file
+3. `gh auth token --hostname <host>` fallback when enabled
 
 Rationale:
 
@@ -379,7 +385,7 @@ Default interval is `10s`, but effective interval is adaptive:
 - normal: user interval
 - low quota: max(user interval, 20s)
 - very low quota: max(user interval, 60s)
-- rate-limited: pause until `Retry-After` or reset time, then resume with backoff
+- hard-limit responses should preserve the last good snapshot and surface reset or wait hints to the operator
 
 ### 11.3 Backoff
 
@@ -477,7 +483,7 @@ Rust stack:
 
 - `ratatui` for rendering
 - `crossterm` for terminal input and lifecycle
-- `tokio` for async runtime
+- background polling thread for network work
 - `clap` for CLI parsing
 - `reqwest` for HTTP
 - `serde` / `serde_json`
@@ -628,13 +634,11 @@ Primary usage:
 
 Derived order:
 
-1. `Merged`
-2. `Closed`
-3. `Draft`
-4. `Changes requested`
-5. `Approved`
-6. `Review requested`
-7. `Open`
+1. `Draft`
+2. `Changes requested`
+3. `Approved`
+4. `Review requested`
+5. `Open`
 
 ### 15.2 CI rollup state
 
@@ -677,9 +681,10 @@ Prism should fail soft.
 
 Path:
 
-- macOS/Linux: `~/.config/prism/config.toml`
+- macOS: `~/Library/Application Support/app.lynxsyn.prism/config.toml`
+- Linux: `$XDG_CONFIG_HOME/prism/config.toml` or `~/.config/prism/config.toml`
 
-Proposed shape:
+Current generated shape:
 
 ```toml
 host = "github.com"
@@ -702,6 +707,11 @@ theme = "terminal"
 open_command = ""
 ascii_only = false
 ```
+
+Notes:
+
+- `theme` is present in the template but not applied by the current TUI
+- `open_command` and `ascii_only` are active today
 
 ## 18. Logging
 
@@ -875,7 +885,7 @@ Exit criteria:
 
 - language: Rust
 - rendering: `ratatui` + `crossterm`
-- runtime: `tokio`
+- runtime: background polling thread
 - CLI parser: `clap`
 - HTTP: direct `reqwest`
 - PR data: GraphQL

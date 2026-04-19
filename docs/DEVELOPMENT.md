@@ -1,6 +1,7 @@
 # Prism Development Guide
 
 This document keeps implementation work aligned with the converged plan.
+It is a contributor document, not the source of truth for the current shipped CLI or TUI surface; use the README and user guide for that.
 
 ## 1. Product Boundaries
 
@@ -47,9 +48,9 @@ Converged implementation choices:
 
 - `ratatui` for rendering
 - `crossterm` for terminal lifecycle and input
-- `tokio` for async runtime
 - `clap` for CLI parsing
 - `reqwest` for HTTP
+- background polling off the render loop
 - GraphQL for PR summaries
 - REST for Actions runs and jobs
 
@@ -115,8 +116,8 @@ Requirements:
 
 Target widths:
 
-- compact mode: around `40+` columns
-- split mode: around `80+` columns
+- compact mode: around `52+` columns
+- split mode: around `96+` columns
 
 ## 6. Runtime Rules
 
